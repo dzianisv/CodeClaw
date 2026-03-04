@@ -11,7 +11,7 @@ Run an end-to-end validation that GitHub mentions to the configured app handle a
 ## Inputs
 - `issue_url` (required): Full GitHub issue URL to test.
 - `app_handle` (required): Mention handle, e.g. `@clawengineer`.
-- `bridge_script` (optional): Defaults to `/Users/engineer/workspace/start-clawengineer-webhook-bridge.sh`.
+- `bridge_script` (optional): Defaults to `scripts/start-clawengineer-webhook-bridge.sh`.
 - `timeout_seconds` (optional): Defaults to `180`.
 
 ## Preconditions
@@ -55,4 +55,3 @@ Run an end-to-end validation that GitHub mentions to the configured app handle a
   - Check OpenClaw session `.jsonl` for marker and outbound errors.
 - If browser is not authenticated:
   - Fail with explicit auth prerequisite message.
-

@@ -9,7 +9,7 @@ Validate that `setupOpenClawOrchestrator.ts` can provision and re-provision Open
 - Need regression proof that localhost setup still works.
 
 ## Inputs
-- `setup_script` (optional): default `/Users/engineer/workspace/setupOpenClawOrchestrator.ts`
+- `setup_script` (optional): default `scripts/setupOpenClawOrchestrator.ts`
 - `test_issue` (required): GitHub issue URL for mention loop test
 - `app_handle` (required): real app handle (example `@clawengineer`)
 
