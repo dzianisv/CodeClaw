@@ -50,6 +50,10 @@
   - Switched grader provider id to `azure:chat:gpt-4.1` with explicit `apiBaseUrl` + `apiHost`.
   - Switched promptfoo invocation to local `node_modules/.bin/promptfoo` when available (fallback `npx promptfoo@latest`).
   - Promptfoo non-zero exits now reported as scored eval outcome instead of hard script failure.
+- Follow-up hardening:
+  - Added `spawnSync` startup error handling in `gh()` wrapper.
+  - Added explicit `AZURE_OPENAI_API_KEY` fail-fast validation.
+  - Replaced URL-regex issue parsing with `gh api` issue creation + JSON parsing (`createIssue`).
 
 ## Validation Performed
 
@@ -64,6 +68,10 @@
   - `bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 5`
   - Report: `reports/eval-output-2026-03-05T08-39-29-653Z.json`
   - Result: 3/3 FAIL due timeout (expected infra), but rubric grading executed with Azure tokens (no 404).
+- Eval smoke run (post-hardening):
+  - `bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 1`
+  - Report: `reports/eval-output-2026-03-05T09-09-39-844Z.json`
+  - Result: same expected timeout FAILs; issue create/close flow and grader path verified.
 - Full eval run (required command):
   - `bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 300`
   - Report: `reports/eval-output-2026-03-05T08-55-37-423Z.json`
