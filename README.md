@@ -42,3 +42,8 @@ Optional environment overrides:
 - `TEST_ISSUE_REPO` / `TEST_ISSUE_NUMBER`
 - `TEST_PR_REPO` / `TEST_PR_NUMBER`
 - `TEST_DISCUSSION_REPO` / `TEST_DISCUSSION_NUMBER`
+
+Report status codes:
+- `PASS` validated end-to-end
+- `BLOCKED` external/platform constraint
+- `FAIL` unexpected regression

@@ -46,3 +46,8 @@ Execute a deterministic, script-driven end-to-end matrix for OpenClaw GitHub men
   - bot reply URL/id when present
   - ingress/session-key evidence
   - pass/fail per test
+
+## Status semantics
+- `PASS`: live end-to-end behavior validated.
+- `BLOCKED`: behavior is blocked by external/platform constraint (for example app not installed on org repo, or discussion outbound not supported by current GitHub channel target format).
+- `FAIL`: unexpected regression in behavior that should work in current environment.
