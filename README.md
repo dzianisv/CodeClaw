@@ -6,7 +6,7 @@ OpenClaw localhost deployment helpers for GitHub App mention orchestration.
 - `scripts/setupOpenClawOrchestrator.ts`
   - Non-interactive localhost setup for OpenClaw gateway/model/hooks/channels.
   - Provisions GitHub mention hook transform and validates localhost readiness.
-- `scripts/start-clawengineer-webhook-bridge.sh`
+- `scripts/start-clawengineer-webhook-bridge.ts`
   - Starts local relay + Cloudflare tunnel and patches GitHub App webhook URL.
 - `.agents/skills/github-mention-e2e-playwriter/SKILL.md`
   - E2E protocol for mention -> OpenClaw -> GitHub app reply validation.
@@ -25,5 +25,5 @@ bun scripts/setupOpenClawOrchestrator.ts
 
 ## Refresh webhook bridge
 ```bash
-./scripts/start-clawengineer-webhook-bridge.sh
+bun scripts/start-clawengineer-webhook-bridge.ts
 ```

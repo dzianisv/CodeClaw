@@ -1,3 +1,8 @@
+---
+name: github-mention-e2e-playwriter
+description: End-to-end protocol for validating GitHub mention ingestion into OpenClaw and bot replies back to the same GitHub thread.
+---
+
 # GitHub Mention E2E (Playwriter)
 
 ## Purpose
@@ -11,7 +16,7 @@ Run an end-to-end validation that GitHub mentions to the configured app handle a
 ## Inputs
 - `issue_url` (required): Full GitHub issue URL to test.
 - `app_handle` (required): Mention handle, e.g. `@clawengineer`.
-- `bridge_script` (optional): Defaults to `scripts/start-clawengineer-webhook-bridge.sh`.
+- `bridge_script` (optional): Defaults to `scripts/start-clawengineer-webhook-bridge.ts`.
 - `timeout_seconds` (optional): Defaults to `180`.
 
 ## Preconditions

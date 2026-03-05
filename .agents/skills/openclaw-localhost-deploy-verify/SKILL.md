@@ -1,3 +1,8 @@
+---
+name: openclaw-localhost-deploy-verify
+description: Run localhost OpenClaw deployment verification including hooks, channel readiness, idempotency, and live GitHub mention loop.
+---
+
 # OpenClaw Localhost Deploy Verify
 
 ## Purpose
