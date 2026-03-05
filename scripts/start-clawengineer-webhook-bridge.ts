@@ -130,6 +130,44 @@ function killListenersOnPort(port: number) {
       // ignore
     }
   }
+
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const stillListening = listListeningPids(port).filter((pid) => pids.includes(pid));
+    if (stillListening.length === 0) return;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150);
+  }
+
+  for (const pid of pids) {
+    const stillListening = listListeningPids(port).includes(pid);
+    if (!stillListening) continue;
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function listListeningPids(port: number): number[] {
+  const probe = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (probe.status !== 0 || !probe.stdout?.trim()) return [];
+  return probe.stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter((entry) => /^\d+$/.test(entry))
+    .map((entry) => Number(entry))
+    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid);
+}
+
+function validateRelayPort(value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > 65535) {
+    fail(`Invalid RELAY_PORT: ${String(value)}. Expected integer 1..65535.`);
+  }
+  return value;
 }
 
 function sanitizeHeaderValue(value: string | string[] | undefined): string {
@@ -139,6 +177,7 @@ function sanitizeHeaderValue(value: string | string[] | undefined): string {
 
 async function main() {
   ensureBinary("cloudflared");
+  validateRelayPort(relayPort);
   if (!existsSync(envFile)) {
     fail(`Missing env file: ${envFile}`);
   }
