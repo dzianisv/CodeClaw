@@ -39,9 +39,9 @@ bun scripts/runGithubMentionE2ETest.ts
 Optional environment overrides:
 - `TEST_POLL_SECONDS` (default `150`)
 - `TEST_ORG` / `TEST_CODEBRIDGE_REPO` / `TEST_CODEBRIDGE_ISSUE`
-- `TEST_ISSUE_REPO` / `TEST_ISSUE_NUMBER`
-- `TEST_PR_REPO` / `TEST_PR_NUMBER`
-- `TEST_DISCUSSION_REPO` / `TEST_DISCUSSION_NUMBER`
+- `TEST_ISSUE_REPO` / `TEST_ISSUE_NUMBER` (defaults to codebridge target)
+- `TEST_PR_REPO` / `TEST_PR_NUMBER` (optional; skipped unless `TEST_PR_NUMBER > 0`)
+- `TEST_DISCUSSION_REPO` / `TEST_DISCUSSION_NUMBER` (optional; skipped unless `TEST_DISCUSSION_NUMBER > 0`)
 
 Report status codes:
 - `PASS` validated end-to-end

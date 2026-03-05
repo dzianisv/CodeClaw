@@ -14,7 +14,7 @@ Run an end-to-end validation that GitHub mentions to the configured app handle a
 - You need a production-like regression check.
 
 ## Inputs
-- `target_url` (required): Full GitHub issue/discussion/PR URL for the selected test case.
+- `target_url` (required): Full GitHub issue/discussion/PR URL (default validation target is `VibeTechnologies/codebridge-test` issue thread).
 - `app_handle` (required): Mention handle, e.g. `@clawengineer`.
 - `bridge_script` (optional): Defaults to `scripts/start-clawengineer-webhook-bridge.ts`.
 - `timeout_seconds` (optional): Defaults to `180`.

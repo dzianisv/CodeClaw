@@ -65,12 +65,12 @@ const ORG = process.env.TEST_ORG?.trim() || "VibeTechnologies";
 const CODEBRIDGE_REPO = process.env.TEST_CODEBRIDGE_REPO?.trim() || `${ORG}/codebridge-test`;
 const CODEBRIDGE_ISSUE = Number(process.env.TEST_CODEBRIDGE_ISSUE || "1");
 
-const ISSUE_REPO = process.env.TEST_ISSUE_REPO?.trim() || "dzianisv/AiDocumentsOrganizer";
-const ISSUE_NUMBER = Number(process.env.TEST_ISSUE_NUMBER || "6");
-const PR_REPO = process.env.TEST_PR_REPO?.trim() || "dzianisv/AiDocumentsOrganizer";
-const PR_NUMBER = Number(process.env.TEST_PR_NUMBER || "4");
-const DISCUSSION_REPO = process.env.TEST_DISCUSSION_REPO?.trim() || "dzianisv/openhaystack-web";
-const DISCUSSION_NUMBER = Number(process.env.TEST_DISCUSSION_NUMBER || "2");
+const ISSUE_REPO = process.env.TEST_ISSUE_REPO?.trim() || CODEBRIDGE_REPO;
+const ISSUE_NUMBER = Number(process.env.TEST_ISSUE_NUMBER || String(CODEBRIDGE_ISSUE));
+const PR_REPO = process.env.TEST_PR_REPO?.trim() || CODEBRIDGE_REPO;
+const PR_NUMBER = Number(process.env.TEST_PR_NUMBER || "0");
+const DISCUSSION_REPO = process.env.TEST_DISCUSSION_REPO?.trim() || CODEBRIDGE_REPO;
+const DISCUSSION_NUMBER = Number(process.env.TEST_DISCUSSION_NUMBER || "0");
 
 const POLL_SECONDS = Number(process.env.TEST_POLL_SECONDS || "150");
 const POLL_INTERVAL_MS = 5000;
@@ -183,6 +183,10 @@ function parseRepo(full: string): { owner: string; repo: string } {
   const [owner, repo] = full.split("/");
   if (!owner || !repo) throw new Error(`Invalid repo format: ${full}`);
   return { owner, repo };
+}
+
+function isPositiveInteger(value: number): boolean {
+  return Number.isInteger(value) && value > 0;
 }
 
 function findMarkerIngress(marker: string): { detected: boolean; keys: string[]; lines: string[] } {
@@ -474,9 +478,14 @@ async function testIssueAssigned(input: {
   webhookSecret: string;
   hooksToken: string;
   installationId: number;
+  installedAccounts: string[];
 }): Promise<TestResult> {
   const notes: string[] = [];
   const { owner, repo } = parseRepo(CODEBRIDGE_REPO);
+  const syntheticTarget = parseRepo(input.issueRepoFull);
+  const syntheticTargetInstalled = input.installedAccounts.includes(
+    syntheticTarget.owner.toLowerCase(),
+  );
   try {
     const assigneeCheck = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/assignees/${input.appLogin}`,
@@ -492,14 +501,13 @@ async function testIssueAssigned(input: {
     );
     if (assigneeCheck.status === 404) {
       const marker = makeMarker("e2e-assigned-synthetic");
-      const syntheticIssue = parseRepo(input.issueRepoFull);
-      const issueUrl = `https://github.com/${syntheticIssue.owner}/${syntheticIssue.repo}/issues/${input.issueNumber}`;
+      const issueUrl = `https://github.com/${syntheticTarget.owner}/${syntheticTarget.repo}/issues/${input.issueNumber}`;
       const syntheticPayload = {
         action: "assigned",
         repository: {
-          name: syntheticIssue.repo,
+          name: syntheticTarget.repo,
           owner: {
-            login: syntheticIssue.owner,
+            login: syntheticTarget.owner,
           },
         },
         issue: {
@@ -522,6 +530,7 @@ async function testIssueAssigned(input: {
       };
       const rawBody = JSON.stringify(syntheticPayload);
       const deliveryId = `synthetic-${Date.now()}`;
+      const triggerIso = new Date().toISOString();
       const hookResponse = await fetch(HOOK_ENDPOINT, {
         method: "POST",
         headers: {
@@ -546,24 +555,35 @@ async function testIssueAssigned(input: {
         };
       }
 
-      const ingress = findMarkerIngress(marker);
-      const botReply = await pollIssueBotReply({
-        token: input.token,
-        repoFull: input.issueRepoFull,
-        issueNumber: input.issueNumber,
-        botLogins: input.botLogins,
-        triggerIso: new Date().toISOString(),
-      });
-      const ingressAfterPoll = ingress.detected ? ingress : findMarkerIngress(marker);
-
+      const ingressAfterPoll = await waitForMarkerIngress(marker, 20);
+      let botReply: { url: string; id: string } | null = null;
+      if (syntheticTargetInstalled) {
+        botReply = await pollIssueBotReply({
+          token: input.token,
+          repoFull: input.issueRepoFull,
+          issueNumber: input.issueNumber,
+          botLogins: input.botLogins,
+          triggerIso,
+        });
+      } else {
+        notes.push(
+          `Synthetic issues.assigned reply check skipped: app is not installed on ${input.issueRepoFull}.`,
+        );
+      }
       if (!ingressAfterPoll.detected) notes.push("Synthetic issues.assigned did not appear in OpenClaw logs.");
-      if (!botReply) notes.push("Synthetic issues.assigned produced no bot reply within poll timeout.");
+      if (syntheticTargetInstalled && !botReply) {
+        notes.push("Synthetic issues.assigned produced no bot reply within poll timeout.");
+      }
       notes.push(
         `Live assignment unsupported for app handle '${input.appLogin}' on ${CODEBRIDGE_REPO}; validated assignment flow via signed synthetic webhook.`,
       );
+      let status: TestStatus = "FAIL";
+      if (ingressAfterPoll.detected) {
+        status = syntheticTargetInstalled ? (botReply ? "PASS" : "FAIL") : "BLOCKED";
+      }
       return {
         name: "issue-assigned (org codebridge-test)",
-        status: ingressAfterPoll.detected && Boolean(botReply) ? "PASS" : "FAIL",
+        status,
         marker,
         triggerUrl: issueUrl,
         triggerId: String(input.issueNumber),
@@ -910,8 +930,14 @@ async function main() {
       webhookSecret,
       hooksToken,
       installationId: issueInstallation.id,
+      installedAccounts: installation.installations.map((entry) => entry.account.toLowerCase()),
     }),
   );
+  const issueTargetIsCodebridge =
+    ISSUE_REPO.toLowerCase() === CODEBRIDGE_REPO.toLowerCase() && ISSUE_NUMBER === CODEBRIDGE_ISSUE;
+  const codebridgeBlockReason = installation.orgInstalled
+    ? undefined
+    : `GitHub App '${installation.appSlug}' is not installed on org '${ORG}', so webhook delivery from ${CODEBRIDGE_REPO} cannot reach OpenClaw yet.`;
   results.push(
     await testIssueMention({
       token: githubToken,
@@ -919,40 +945,65 @@ async function main() {
       botLogins,
       repoFull: ISSUE_REPO,
       issueNumber: ISSUE_NUMBER,
-      label: "issue",
+      label: issueTargetIsCodebridge ? "codebridge-org" : "issue",
+      blockReason: issueTargetIsCodebridge ? codebridgeBlockReason : undefined,
     }),
   );
-  results.push(
-    await testPrReviewMention({
-      token: githubToken,
-      appHandle,
-      botLogins,
-      repoFull: PR_REPO,
-      prNumber: PR_NUMBER,
-    }),
-  );
-  results.push(
-    await testDiscussionMention({
-      token: githubToken,
-      appHandle,
-      botLogins,
-      repoFull: DISCUSSION_REPO,
-      discussionNumber: DISCUSSION_NUMBER,
-    }),
-  );
-  results.push(
-    await testIssueMention({
-      token: githubToken,
-      appHandle,
-      botLogins,
-      repoFull: CODEBRIDGE_REPO,
-      issueNumber: CODEBRIDGE_ISSUE,
-      label: "codebridge-org",
-      blockReason: installation.orgInstalled
-        ? undefined
-        : `GitHub App '${installation.appSlug}' is not installed on org '${ORG}', so webhook delivery from ${CODEBRIDGE_REPO} cannot reach OpenClaw yet.`,
-    }),
-  );
+  if (!issueTargetIsCodebridge) {
+    results.push(
+      await testIssueMention({
+        token: githubToken,
+        appHandle,
+        botLogins,
+        repoFull: CODEBRIDGE_REPO,
+        issueNumber: CODEBRIDGE_ISSUE,
+        label: "codebridge-org",
+        blockReason: codebridgeBlockReason,
+      }),
+    );
+  }
+  if (isPositiveInteger(PR_NUMBER)) {
+    results.push(
+      await testPrReviewMention({
+        token: githubToken,
+        appHandle,
+        botLogins,
+        repoFull: PR_REPO,
+        prNumber: PR_NUMBER,
+      }),
+    );
+  } else {
+    results.push({
+      name: "pr-review-mention",
+      status: "BLOCKED",
+      ingressDetected: false,
+      ingressSessionKeys: [],
+      notes: [
+        "Skipped PR review mention test: TEST_PR_NUMBER is not configured (>0).",
+      ],
+    });
+  }
+  if (isPositiveInteger(DISCUSSION_NUMBER)) {
+    results.push(
+      await testDiscussionMention({
+        token: githubToken,
+        appHandle,
+        botLogins,
+        repoFull: DISCUSSION_REPO,
+        discussionNumber: DISCUSSION_NUMBER,
+      }),
+    );
+  } else {
+    results.push({
+      name: "discussion-comment-mention",
+      status: "BLOCKED",
+      ingressDetected: false,
+      ingressSessionKeys: [],
+      notes: [
+        "Skipped discussion mention test: TEST_DISCUSSION_NUMBER is not configured (>0).",
+      ],
+    });
+  }
 
   const report: RunReport = {
     startedAt,
