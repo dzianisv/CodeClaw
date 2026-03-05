@@ -2,7 +2,7 @@
 /**
  * OpenClaw Eval: Agent Task Execution Quality
  *
- * Posts 3 test tasks as GitHub issues with @clawengineer mentions,
+ * Posts eval tasks as GitHub issues (mentions + direct assignment trigger),
  * waits for the bot to reply, writes a promptfoo-compatible vars file,
  * then runs `npx promptfoo eval` for LLM-as-judge scoring.
  *
@@ -28,6 +28,7 @@ import path from "node:path";
 type EvalCase = {
   id: string;
   title: string;
+  trigger: "mention" | "assignment";
   /** The mention body posted as a comment */
   prompt: string;
   /** Instructions for the LLM judge (used in promptfoo llm-rubric) */
@@ -38,6 +39,7 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "python-hello-world",
     title: "Create a Python hello world",
+    trigger: "mention",
     prompt:
       "@clawengineer Create a file called hello.py that prints 'Hello, World!' to stdout. Only create the file, nothing else.",
     judgeCriteria: [
@@ -50,6 +52,7 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "typescript-bun-hello",
     title: "Create a TypeScript/Bun hello world",
+    trigger: "mention",
     prompt:
       "@clawengineer Create a file called hello.ts that uses console.log to print 'Hello from Bun!' — it should be valid TypeScript runnable with `bun run hello.ts`. Only create the file, nothing else.",
     judgeCriteria: [
@@ -62,6 +65,7 @@ const EVAL_CASES: EvalCase[] = [
   {
     id: "research-gpt-release",
     title: "Research: first GPT model release date",
+    trigger: "mention",
     prompt:
       "@clawengineer Research and tell me: when was the first GPT model released by OpenAI? Provide the year and month if possible, and a one-sentence summary.",
     judgeCriteria: [
@@ -70,6 +74,20 @@ const EVAL_CASES: EvalCase[] = [
       "If the bot says GPT-2 (2019), GPT-3 (2020), or ChatGPT (2022) as the FIRST model, that is wrong.",
       "If the response contains error messages about network failures, gh CLI, or GitHub API — deduct points but still evaluate the factual content if present.",
       "Score 0-10: 10 = correct date + clean summary, 7 = correct year but vague, 3 = wrong model/date, 0 = no useful answer.",
+    ].join("\n"),
+  },
+  {
+    id: "direct-assignment-no-mention",
+    title: "Direct assignment trigger without mention",
+    trigger: "assignment",
+    prompt:
+      "You were assigned this issue directly. Create a file named assigned-task.md with exactly this line: Handled from direct GitHub assignment trigger.",
+    judgeCriteria: [
+      "This case is about trigger behavior: the issue was ASSIGNED directly to the app without an @mention comment.",
+      "The bot should proceed from assignment trigger alone and report completion.",
+      "Expected implementation detail: file `assigned-task.md` containing `Handled from direct GitHub assignment trigger.`",
+      "If the response says assignment trigger is unsupported or asks for an @mention, score <= 3.",
+      "Score 0-10: 10 = handled via assignment trigger with correct file/output, 5 = partial action but ambiguous trigger handling, 0 = no useful action.",
     ].join("\n"),
   },
 ];
@@ -244,6 +262,16 @@ function createIssueComment(input: { repo: string; issueNumber: number; body: st
     throw new Error(`Failed to create issue comment in ${input.repo}#${input.issueNumber}. Raw response: ${raw}`);
   }
   return comment;
+}
+
+function getGhViewerLogin(): string {
+  try {
+    const raw = gh(["api", "user"]);
+    const user = JSON.parse(raw) as { login?: string };
+    return user.login?.trim() || "unknown-user";
+  } catch {
+    return "unknown-user";
+  }
 }
 
 function parseDotEnv(raw: string): Record<string, string> {
@@ -454,6 +482,126 @@ async function emitSyntheticIssueCommentWebhook(input: {
   return true;
 }
 
+async function emitSyntheticIssueAssignedWebhook(input: {
+  repo: string;
+  issueNumber: number;
+  appLogin: string;
+  senderLogin: string;
+}): Promise<boolean> {
+  const { hooksToken, webhookSecret, hookTarget } = loadOpenClawWebhookEnv();
+  if (!hooksToken || !webhookSecret) {
+    console.log("  WARNING: Synthetic assigned webhook skipped (missing OPENCLAW_HOOKS_TOKEN or webhook secret).");
+    return false;
+  }
+  const [owner, repoName] = input.repo.split("/");
+  if (!owner || !repoName) {
+    console.log(`  WARNING: Synthetic assigned webhook skipped (invalid repo format: ${input.repo}).`);
+    return false;
+  }
+
+  const issueRaw = gh(["api", `repos/${input.repo}/issues/${input.issueNumber}`]);
+  const issue = JSON.parse(issueRaw) as {
+    number: number;
+    title?: string;
+    html_url?: string;
+    body?: string;
+    assignee?: unknown;
+    assignees?: unknown[];
+    pull_request?: unknown;
+  };
+
+  const payload = {
+    action: "assigned",
+    issue: {
+      number: issue.number,
+      title: issue.title ?? "",
+      html_url: issue.html_url ?? "",
+      body: issue.body ?? "",
+      assignee: issue.assignee ?? null,
+      assignees: issue.assignees ?? [],
+      pull_request: issue.pull_request,
+    },
+    assignee: {
+      login: input.appLogin,
+      type: "Bot",
+    },
+    repository: {
+      name: repoName,
+      owner: { login: owner },
+    },
+    sender: {
+      login: input.senderLogin,
+      type: "User",
+    },
+    installation: { id: null },
+  };
+
+  const rawBody = JSON.stringify(payload);
+  const signature = `sha256=${createHmac("sha256", webhookSecret).update(rawBody).digest("hex")}`;
+  const response = await fetch(hookTarget, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-openclaw-token": hooksToken,
+      "x-github-event": "issues",
+      "x-github-delivery": randomUUID(),
+      "x-hub-signature-256": signature,
+    },
+    body: rawBody,
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    console.log(`  WARNING: Synthetic assigned webhook failed (${response.status}): ${responseText.slice(0, 240)}`);
+    return false;
+  }
+  console.log(`  Synthetic assigned webhook delivered to ${hookTarget}`);
+  return true;
+}
+
+type AssignmentAttempt = {
+  mode: "direct" | "synthetic" | "failed";
+  notes: string[];
+};
+
+async function triggerAssignment(input: {
+  repo: string;
+  issueNumber: number;
+  appLogin: string;
+  senderLogin: string;
+}): Promise<AssignmentAttempt> {
+  const notes: string[] = [];
+  try {
+    const raw = gh([
+      "api",
+      "-X", "POST",
+      `repos/${input.repo}/issues/${input.issueNumber}/assignees`,
+      "-f", `assignees[]=${input.appLogin}`,
+    ]);
+    const response = JSON.parse(raw) as {
+      assignees?: Array<{ login?: string }>;
+    };
+    const assigned = (response.assignees || []).some(
+      (assignee) => (assignee.login || "").toLowerCase() === input.appLogin.toLowerCase(),
+    );
+    if (assigned) {
+      notes.push(`Direct assignment succeeded for '${input.appLogin}'.`);
+      return { mode: "direct", notes };
+    }
+    notes.push("Direct assignment API call returned without app login in assignees array.");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    notes.push(`Direct assignment call failed: ${message}`);
+  }
+
+  const syntheticOk = await emitSyntheticIssueAssignedWebhook(input);
+  if (syntheticOk) {
+    notes.push("Used synthetic issues.assigned webhook fallback.");
+    return { mode: "synthetic", notes };
+  }
+  notes.push("Synthetic issues.assigned webhook fallback failed.");
+  return { mode: "failed", notes };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main                                                               */
 /* ------------------------------------------------------------------ */
@@ -461,6 +609,9 @@ async function emitSyntheticIssueCommentWebhook(input: {
 type EvalResult = {
   caseId: string;
   title: string;
+  trigger: "mention" | "assignment";
+  triggerMode: string;
+  triggerNotes: string[];
   prompt: string;
   judgeCriteria: string;
   issueUrl: string;
@@ -483,7 +634,9 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   ensureOpenClawGithubTokenForRepo(args.repo);
   const now = Date.now();
-  const botLogin = args.appHandle.replace(/^@/, "") + "[bot]";
+  const senderLogin = getGhViewerLogin();
+  const appLogin = args.appHandle.replace(/^@/, "");
+  const botLogin = `${appLogin}[bot]`;
   if (!process.env.AZURE_OPENAI_API_KEY) {
     throw new Error("AZURE_OPENAI_API_KEY is required for llm-rubric grading.");
   }
@@ -498,29 +651,73 @@ async function main() {
   console.log(`Synthetic webhook fallback: enabled`);
   console.log(`Cases: ${EVAL_CASES.length}\n`);
 
-  // ── Phase 1: Create issues and post mentions ──────────────────────
-  console.log("--- Phase 1: Creating issues and posting mentions ---\n");
-  const issueMap = new Map<string, { url: string; number: number; mentionComment: IssueComment }>();
+  // ── Phase 1: Create issues and trigger eval actions ───────────────
+  console.log("--- Phase 1: Creating issues and triggering eval actions ---\n");
+  const issueMap = new Map<
+    string,
+    {
+      url: string;
+      number: number;
+      trigger: "mention" | "assignment";
+      mentionComment?: IssueComment;
+      assignmentMode?: AssignmentAttempt["mode"];
+      assignmentNotes: string[];
+    }
+  >();
 
   for (const evalCase of EVAL_CASES) {
     const title = `[eval] ${evalCase.title} (${now})`;
+    const issueBody = evalCase.trigger === "assignment"
+      ? `Automated eval case: ${evalCase.id}\n\nAssignment task (no mention trigger):\n${evalCase.prompt}`
+      : `Automated eval case: ${evalCase.id}`;
     const created = createIssue({
       repo: args.repo,
       title,
-      body: `Automated eval case: ${evalCase.id}`,
+      body: issueBody,
     });
     const url = created.url;
     const issueNumber = created.number;
     console.log(`  Created ${evalCase.id} → ${url}`);
 
-    // Post the mention comment
-    const mentionComment = createIssueComment({
+    if (evalCase.trigger === "mention") {
+      const mentionComment = createIssueComment({
+        repo: args.repo,
+        issueNumber,
+        body: evalCase.prompt,
+      });
+      issueMap.set(evalCase.id, {
+        url,
+        number: issueNumber,
+        trigger: evalCase.trigger,
+        mentionComment,
+        assignmentNotes: [],
+      });
+      console.log(`  Posted mention on #${issueNumber} (${mentionComment.html_url})`);
+      continue;
+    }
+
+    const assignment = await triggerAssignment({
       repo: args.repo,
       issueNumber,
-      body: evalCase.prompt,
+      appLogin,
+      senderLogin,
     });
-    issueMap.set(evalCase.id, { url, number: issueNumber, mentionComment });
-    console.log(`  Posted mention on #${issueNumber} (${mentionComment.html_url})`);
+    if (assignment.mode === "failed") {
+      throw new Error(
+        `Assignment trigger failed for case '${evalCase.id}' on ${args.repo}#${issueNumber}: ${assignment.notes.join(" | ")}`,
+      );
+    }
+    issueMap.set(evalCase.id, {
+      url,
+      number: issueNumber,
+      trigger: evalCase.trigger,
+      assignmentMode: assignment.mode,
+      assignmentNotes: assignment.notes,
+    });
+    console.log(`  Triggered direct assignment on #${issueNumber} using mode=${assignment.mode}`);
+    for (const note of assignment.notes) {
+      console.log(`    note: ${note}`);
+    }
   }
 
   // ── Phase 2: Wait for bot replies ─────────────────────────────────
@@ -529,7 +726,7 @@ async function main() {
 
   for (const evalCase of EVAL_CASES) {
     const issue = issueMap.get(evalCase.id)!;
-    console.log(`  Waiting for reply on #${issue.number} (${evalCase.id})...`);
+    console.log(`  Waiting for reply on #${issue.number} (${evalCase.id}, trigger=${issue.trigger})...`);
 
     let reply = await waitForBotReply({
       repo: args.repo,
@@ -543,12 +740,30 @@ async function main() {
     if (!timedOut) {
       console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number}`);
     } else {
-      console.log(`  TIMEOUT on #${issue.number} (attempting synthetic webhook fallback)`);
-      const syntheticOk = await emitSyntheticIssueCommentWebhook({
-        repo: args.repo,
-        issueNumber: issue.number,
-        comment: issue.mentionComment,
-      });
+      let syntheticOk = false;
+      if (issue.trigger === "mention") {
+        if (!issue.mentionComment) {
+          throw new Error(`Internal error: mention trigger case missing mentionComment for issue #${issue.number}`);
+        }
+        syntheticOk = await emitSyntheticIssueCommentWebhook({
+          repo: args.repo,
+          issueNumber: issue.number,
+          comment: issue.mentionComment,
+        });
+      } else {
+        syntheticOk = await emitSyntheticIssueAssignedWebhook({
+          repo: args.repo,
+          issueNumber: issue.number,
+          appLogin,
+          senderLogin,
+        });
+      }
+      if (issue.trigger === "assignment") {
+        issue.assignmentNotes.push("Primary reply poll timed out; attempted synthetic issues.assigned retry.");
+        if (syntheticOk) issue.assignmentMode = "synthetic";
+      }
+      const fallbackLabel = issue.trigger === "mention" ? "synthetic issue_comment" : "synthetic issues.assigned";
+      console.log(`  TIMEOUT on #${issue.number} (attempting ${fallbackLabel} fallback)`);
       if (syntheticOk) {
         reply = await waitForBotReply({
           repo: args.repo,
@@ -574,6 +789,9 @@ async function main() {
     results.push({
       caseId: evalCase.id,
       title: evalCase.title,
+      trigger: evalCase.trigger,
+      triggerMode: issue.trigger === "assignment" ? (issue.assignmentMode ?? "failed") : "mention-comment",
+      triggerNotes: issue.assignmentNotes,
       prompt: evalCase.prompt,
       judgeCriteria: evalCase.judgeCriteria,
       issueUrl: issue.url,
@@ -595,6 +813,9 @@ async function main() {
   const testCases = results.map((r) => ({
     vars: {
       task_title: r.title,
+      trigger_type: r.trigger,
+      trigger_mode: r.triggerMode,
+      trigger_notes: r.triggerNotes.length > 0 ? r.triggerNotes.join(" | ") : "(none)",
       task_prompt: r.prompt,
       bot_response: r.botResponse,
       file_changes: r.fileChanges || "(no file changes / no PR created)",
@@ -616,7 +837,10 @@ async function main() {
       [
         "## Task",
         "Title: {{task_title}}",
+        "Trigger type: {{trigger_type}}",
+        "Trigger mode: {{trigger_mode}}",
         "Prompt: {{task_prompt}}",
+        "Trigger notes: {{trigger_notes}}",
         "",
         "## Bot Response",
         "{{bot_response}}",
@@ -716,6 +940,7 @@ async function main() {
   for (const r of results) {
     const status = r.timedOut ? "TIMEOUT" : "COLLECTED";
     console.log(`[${status}] ${r.caseId}`);
+    console.log(`  Trigger:  ${r.trigger} (${r.triggerMode})`);
     console.log(`  Issue:    ${r.issueUrl}`);
     console.log(`  Response: ${r.botResponse.slice(0, 120).replace(/\n/g, " ")}...`);
     console.log();
