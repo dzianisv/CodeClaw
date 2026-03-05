@@ -1,0 +1,15 @@
+# Test report artifacts (regenerated on each E2E run)
+reports/
+
+# Environment / secrets
+.env
+.env.*
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+
+# Debug logs
+*.log
