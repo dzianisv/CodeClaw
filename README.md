@@ -16,6 +16,8 @@ OpenClaw localhost deployment helpers for GitHub App mention orchestration.
   - Repeatable localhost deploy + idempotency + live mention verification protocol.
 - `.agents/skills/github-mention-e2e-runner/SKILL.md`
   - One-command script-driven E2E test protocol and report generation.
+- `docs/testing.md`
+  - Mandatory testing gates, required commands, and completion criteria.
 
 ## Prerequisites
 - `openclaw`, `bun`, `launchctl`, `gh`, `cloudflared`
@@ -47,3 +49,6 @@ Report status codes:
 - `PASS` validated end-to-end
 - `BLOCKED` external/platform constraint
 - `FAIL` unexpected regression
+
+## Testing Requirements
+See [docs/testing.md](./docs/testing.md) for mandatory test gates and required evidence before completion/merge.

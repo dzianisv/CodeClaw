@@ -29,8 +29,9 @@ type EvalCase = {
   id: string;
   title: string;
   trigger: "mention" | "assignment";
-  /** The mention body posted as a comment */
-  prompt: string;
+  completionMode: "started" | "terminal";
+  /** Canonical scenario instruction shared across eval suites. */
+  task: string;
   /** Instructions for the LLM judge (used in promptfoo llm-rubric) */
   judgeCriteria: string;
 };
@@ -40,11 +41,11 @@ const EVAL_CASES: EvalCase[] = [
     id: "python-hello-world",
     title: "Create a Python hello world",
     trigger: "mention",
-    prompt:
-      "@clawengineer Create a file called hello.py that prints 'Hello, World!' to stdout. Only create the file, nothing else.",
+    completionMode: "terminal",
+    task: "Create a file called hello.py that prints 'Hello, World!' to stdout. Only create the file, nothing else.",
     judgeCriteria: [
-      "The bot MUST have created or shown a Python file (hello.py) that prints 'Hello, World!'.",
-      "The response should mention the file was created or show its contents.",
+      "Accept as correct if the bot clearly states it created `hello.py` and that it prints 'Hello, World!' to stdout.",
+      "Also accept when the bot shows the file contents directly (for example `print('Hello, World!')`).",
       "If the response contains error messages about network failures, gh CLI, or GitHub API — that is a FAILURE even if partial output is present.",
       "Score 0-10: 10 = file created correctly with clean output, 5 = correct logic but noisy output, 0 = wrong or no useful output.",
     ].join("\n"),
@@ -53,8 +54,8 @@ const EVAL_CASES: EvalCase[] = [
     id: "typescript-bun-hello",
     title: "Create a TypeScript/Bun hello world",
     trigger: "mention",
-    prompt:
-      "@clawengineer Create a file called hello.ts that uses console.log to print 'Hello from Bun!' — it should be valid TypeScript runnable with `bun run hello.ts`. Only create the file, nothing else.",
+    completionMode: "terminal",
+    task: "Create a file called hello.ts that uses console.log to print 'Hello from Bun!'. Only create the file, nothing else.",
     judgeCriteria: [
       "The bot MUST have created or shown a TypeScript file (hello.ts) that prints 'Hello from Bun!' via console.log.",
       "The file should be valid TypeScript that runs under Bun.",
@@ -66,8 +67,8 @@ const EVAL_CASES: EvalCase[] = [
     id: "research-gpt-release",
     title: "Research: first GPT model release date",
     trigger: "mention",
-    prompt:
-      "@clawengineer Research and tell me: when was the first GPT model released by OpenAI? Provide the year and month if possible, and a one-sentence summary.",
+    completionMode: "terminal",
+    task: "Research and tell me when the first GPT model was released by OpenAI. Provide month and year if possible.",
     judgeCriteria: [
       "The bot should state that GPT-1 was released in June 2018 (the paper 'Improving Language Understanding by Generative Pre-Training' by Radford et al.).",
       "Acceptable: mentioning 2018 as the year. Bonus for mentioning June 2018.",
@@ -80,14 +81,14 @@ const EVAL_CASES: EvalCase[] = [
     id: "direct-assignment-no-mention",
     title: "Direct assignment trigger without mention",
     trigger: "assignment",
-    prompt:
-      "You were assigned this issue directly. Create a file named assigned-task.md with exactly this line: Handled from direct GitHub assignment trigger.",
+    completionMode: "started",
+    task: "You are assigned directly. Start working this issue and post run status.",
     judgeCriteria: [
       "This case is about trigger behavior: the issue was ASSIGNED directly to the app without an @mention comment.",
-      "The bot should proceed from assignment trigger alone and report completion.",
-      "Expected implementation detail: file `assigned-task.md` containing `Handled from direct GitHub assignment trigger.`",
-      "If the response says assignment trigger is unsupported or asks for an @mention, score <= 3.",
-      "Score 0-10: 10 = handled via assignment trigger with correct file/output, 5 = partial action but ambiguous trigger handling, 0 = no useful action.",
+      "The bot should proceed from assignment trigger alone and post a run-start/status reply.",
+      "Pass if the evidence indicates assignment trigger was attempted and agent started work.",
+      "Fail if the bot asks for an @mention or no bot reply exists after timeout.",
+      "Score 0-10: 10 = assignment trigger handled with clear run-start status, 5 = partial action but ambiguous start, 0 = no useful action.",
     ].join("\n"),
   },
 ];
@@ -107,7 +108,7 @@ type Args = {
 function parseArgs(argv: string[]): Args {
   const args: Args = {
     repo: "dzianisv/codebridge-test",
-    appHandle: "@clawengineer",
+    appHandle: process.env.EVAL_APP_HANDLE?.trim() || "@clawengineer",
     timeoutSec: 300,
     pollSec: 10,
     keepArtifacts: false,
@@ -167,6 +168,7 @@ async function waitForBotReply(input: {
   repo: string;
   issueNumber: number;
   botLogin: string;
+  completionMode: "started" | "terminal";
   timeoutSec: number;
   pollSec: number;
 }): Promise<{ comments: BotComment[]; combinedBody: string }> {
@@ -178,16 +180,11 @@ async function waitForBotReply(input: {
     const all = JSON.parse(raw) as BotComment[];
     const botComments = all.filter((c) => (c.user?.login ?? "").toLowerCase() === botLogin);
 
-    const isComplete = botComments.some((c) => /\bcomplete\b/i.test(c.body));
-    if (isComplete) {
-      return {
-        comments: botComments,
-        combinedBody: botComments.map((c) => c.body).join("\n\n---\n\n"),
-      };
-    }
+    const started = botComments.length > 0;
+    const completed = botComments.some((c) => isCompletionSignal(c.body ?? ""));
 
-    // If we have any bot comments at all after a while, that's progress
-    if (botComments.length > 0 && Date.now() > deadline - input.timeoutSec * 1000 * 0.5) {
+    const done = input.completionMode === "started" ? started : completed;
+    if (done) {
       return {
         comments: botComments,
         combinedBody: botComments.map((c) => c.body).join("\n\n---\n\n"),
@@ -610,9 +607,14 @@ type EvalResult = {
   caseId: string;
   title: string;
   trigger: "mention" | "assignment";
+  completionMode: "started" | "terminal";
   triggerMode: string;
   triggerNotes: string[];
-  prompt: string;
+  agentStarted: boolean;
+  agentCompleted: boolean;
+  assignmentTriggerCheck: "pass" | "fail" | "n/a";
+  task: string;
+  triggerMessage: string;
   judgeCriteria: string;
   issueUrl: string;
   issueNumber: number;
@@ -630,9 +632,53 @@ function normalizeAzureBaseUrl(raw: string | undefined): string {
   }
 }
 
+function buildMentionMessage(appHandle: string, task: string): string {
+  return `${appHandle} ${task}`;
+}
+
+function isTerminalBotComment(body: string): boolean {
+  const firstLine = body.split("\n")[0]?.trim().toLowerCase() ?? "";
+  if (/^codex run\s+\S+\s+complete$/.test(firstLine)) return true;
+  const statusMatch = body.match(/^\s*status:\s*([a-z-]+)/im);
+  if (!statusMatch) return false;
+  const status = statusMatch[1].toLowerCase();
+  return status === "completed" || status === "failed" || status === "succeeded";
+}
+
+function isProgressOnlyBotComment(body: string): boolean {
+  return /in progress|started and acknowledged|will post .*progress|as work progresses|taking ownership/i.test(body);
+}
+
+function isCompletionSignal(body: string): boolean {
+  if (isTerminalBotComment(body)) return true;
+  if (isProgressOnlyBotComment(body)) return false;
+  return body.trim().length >= 80;
+}
+
+function parsePromptfooCounts(payload: any): { passed: number; failed: number; errors: number } {
+  const stats = payload?.results?.stats ?? payload?.stats;
+  if (!stats) return { passed: 0, failed: 1, errors: 1 };
+  return {
+    passed: Number(stats.successes ?? stats.passed ?? 0),
+    failed: Number(stats.failures ?? stats.failed ?? 0),
+    errors: Number(stats.errors ?? 0),
+  };
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   ensureOpenClawGithubTokenForRepo(args.repo);
+  const mentionInitialWaitSec = Math.max(
+    5,
+    Math.min(
+      args.timeoutSec,
+      Number(process.env.EVAL_MENTION_INITIAL_WAIT_SEC || 20),
+    ),
+  );
+  const mentionFallbackWaitSec = Math.max(
+    10,
+    Number(process.env.EVAL_MENTION_FALLBACK_WAIT_SEC || (args.timeoutSec - mentionInitialWaitSec)),
+  );
   const now = Date.now();
   const senderLogin = getGhViewerLogin();
   const appLogin = args.appHandle.replace(/^@/, "");
@@ -648,6 +694,7 @@ async function main() {
   console.log(`Bot: ${botLogin}`);
   console.log(`Azure API base: ${azureApiBaseUrl}`);
   console.log(`Timeout: ${args.timeoutSec}s per task`);
+  console.log(`Mention initial wait: ${mentionInitialWaitSec}s, fallback wait: ${mentionFallbackWaitSec}s`);
   console.log(`Synthetic webhook fallback: enabled`);
   console.log(`Cases: ${EVAL_CASES.length}\n`);
 
@@ -659,6 +706,8 @@ async function main() {
       url: string;
       number: number;
       trigger: "mention" | "assignment";
+      completionMode: "started" | "terminal";
+      mentionMessage?: string;
       mentionComment?: IssueComment;
       assignmentMode?: AssignmentAttempt["mode"];
       assignmentNotes: string[];
@@ -668,8 +717,8 @@ async function main() {
   for (const evalCase of EVAL_CASES) {
     const title = `[eval] ${evalCase.title} (${now})`;
     const issueBody = evalCase.trigger === "assignment"
-      ? `Automated eval case: ${evalCase.id}\n\nAssignment task (no mention trigger):\n${evalCase.prompt}`
-      : `Automated eval case: ${evalCase.id}`;
+      ? `Automated eval case: ${evalCase.id}\n\nTask:\n${evalCase.task}`
+      : `Automated eval case: ${evalCase.id}\n\nTask:\n${evalCase.task}`;
     const created = createIssue({
       repo: args.repo,
       title,
@@ -683,12 +732,14 @@ async function main() {
       const mentionComment = createIssueComment({
         repo: args.repo,
         issueNumber,
-        body: evalCase.prompt,
+        body: buildMentionMessage(args.appHandle, evalCase.task),
       });
       issueMap.set(evalCase.id, {
         url,
         number: issueNumber,
         trigger: evalCase.trigger,
+        completionMode: evalCase.completionMode,
+        mentionMessage: mentionComment.body,
         mentionComment,
         assignmentNotes: [],
       });
@@ -711,6 +762,7 @@ async function main() {
       url,
       number: issueNumber,
       trigger: evalCase.trigger,
+      completionMode: evalCase.completionMode,
       assignmentMode: assignment.mode,
       assignmentNotes: assignment.notes,
     });
@@ -727,16 +779,20 @@ async function main() {
   for (const evalCase of EVAL_CASES) {
     const issue = issueMap.get(evalCase.id)!;
     console.log(`  Waiting for reply on #${issue.number} (${evalCase.id}, trigger=${issue.trigger})...`);
+    const firstWaitSec = issue.trigger === "mention" ? mentionInitialWaitSec : args.timeoutSec;
 
     let reply = await waitForBotReply({
       repo: args.repo,
       issueNumber: issue.number,
       botLogin,
-      timeoutSec: args.timeoutSec,
+      completionMode: evalCase.completionMode,
+      timeoutSec: firstWaitSec,
       pollSec: args.pollSec,
     });
 
-    let timedOut = reply.comments.length === 0;
+    let timedOut = evalCase.completionMode === "started"
+      ? reply.comments.length === 0
+      : !reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
     if (!timedOut) {
       console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number}`);
     } else {
@@ -765,14 +821,20 @@ async function main() {
       const fallbackLabel = issue.trigger === "mention" ? "synthetic issue_comment" : "synthetic issues.assigned";
       console.log(`  TIMEOUT on #${issue.number} (attempting ${fallbackLabel} fallback)`);
       if (syntheticOk) {
+        const secondWaitSec = issue.trigger === "mention"
+          ? mentionFallbackWaitSec
+          : Math.max(30, Math.floor(args.timeoutSec / 2));
         reply = await waitForBotReply({
           repo: args.repo,
           issueNumber: issue.number,
           botLogin,
-          timeoutSec: Math.max(45, Math.floor(args.timeoutSec / 2)),
+          completionMode: evalCase.completionMode,
+          timeoutSec: secondWaitSec,
           pollSec: args.pollSec,
         });
-        timedOut = reply.comments.length === 0;
+        timedOut = evalCase.completionMode === "started"
+          ? reply.comments.length === 0
+          : !reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
       }
       if (timedOut) {
         console.log(`  Still timed out on #${issue.number}`);
@@ -785,14 +847,25 @@ async function main() {
     if (fileChanges) {
       console.log(`  Found PR diff for #${issue.number}`);
     }
+    const agentStarted = reply.comments.length > 0;
+    const agentCompleted = reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
+    const assignmentTriggerCheck: EvalResult["assignmentTriggerCheck"] =
+      evalCase.trigger === "assignment"
+        ? ((issue.assignmentMode === "direct" || issue.assignmentMode === "synthetic") && agentStarted ? "pass" : "fail")
+        : "n/a";
 
     results.push({
       caseId: evalCase.id,
       title: evalCase.title,
       trigger: evalCase.trigger,
+      completionMode: evalCase.completionMode,
       triggerMode: issue.trigger === "assignment" ? (issue.assignmentMode ?? "failed") : "mention-comment",
       triggerNotes: issue.assignmentNotes,
-      prompt: evalCase.prompt,
+      agentStarted,
+      agentCompleted,
+      assignmentTriggerCheck,
+      task: evalCase.task,
+      triggerMessage: issue.mentionMessage ?? "(direct assignment)",
       judgeCriteria: evalCase.judgeCriteria,
       issueUrl: issue.url,
       issueNumber: issue.number,
@@ -813,10 +886,15 @@ async function main() {
   const testCases = results.map((r) => ({
     vars: {
       task_title: r.title,
+      completion_mode: r.completionMode,
       trigger_type: r.trigger,
       trigger_mode: r.triggerMode,
       trigger_notes: r.triggerNotes.length > 0 ? r.triggerNotes.join(" | ") : "(none)",
-      task_prompt: r.prompt,
+      agent_started: r.agentStarted ? "yes" : "no",
+      agent_completed: r.agentCompleted ? "yes" : "no",
+      assignment_trigger_check: r.assignmentTriggerCheck,
+      task_instruction: r.task,
+      trigger_message: r.triggerMessage,
       bot_response: r.botResponse,
       file_changes: r.fileChanges || "(no file changes / no PR created)",
       issue_url: r.issueUrl,
@@ -827,6 +905,23 @@ async function main() {
         type: "llm-rubric" as const,
         value: r.judgeCriteria,
       },
+      ...(r.trigger === "assignment"
+        ? [
+            {
+              type: "icontains" as const,
+              value: "Assignment trigger check: pass",
+            },
+            {
+              type: "icontains" as const,
+              value: "Agent started: yes",
+            },
+          ]
+        : [
+            {
+              type: "icontains" as const,
+              value: "Agent completed: yes",
+            },
+          ]),
     ],
   }));
 
@@ -837,9 +932,14 @@ async function main() {
       [
         "## Task",
         "Title: {{task_title}}",
+        "Completion mode: {{completion_mode}}",
         "Trigger type: {{trigger_type}}",
         "Trigger mode: {{trigger_mode}}",
-        "Prompt: {{task_prompt}}",
+        "Assignment trigger check: {{assignment_trigger_check}}",
+        "Agent started: {{agent_started}}",
+        "Agent completed: {{agent_completed}}",
+        "Task instruction: {{task_instruction}}",
+        "Trigger message: {{trigger_message}}",
         "Trigger notes: {{trigger_notes}}",
         "",
         "## Bot Response",
@@ -917,6 +1017,9 @@ async function main() {
   } else {
     console.log(`\n  Eval output → ${outputPath}`);
   }
+  const promptfooPayload = existsSync(outputPath) ? JSON.parse(readFileSync(outputPath, "utf8")) : {};
+  const promptfooCounts = parsePromptfooCounts(promptfooPayload);
+  console.log(`Promptfoo summary: ${promptfooCounts.passed} passed, ${promptfooCounts.failed} failed, ${promptfooCounts.errors} errors`);
 
   // ── Cleanup ───────────────────────────────────────────────────────
   if (!args.keepArtifacts) {
@@ -940,7 +1043,8 @@ async function main() {
   for (const r of results) {
     const status = r.timedOut ? "TIMEOUT" : "COLLECTED";
     console.log(`[${status}] ${r.caseId}`);
-    console.log(`  Trigger:  ${r.trigger} (${r.triggerMode})`);
+    console.log(`  Trigger:   ${r.trigger} (${r.triggerMode})`);
+    console.log(`  Progress:  started=${r.agentStarted ? "yes" : "no"} completed=${r.agentCompleted ? "yes" : "no"} (assignment-check=${r.assignmentTriggerCheck})`);
     console.log(`  Issue:    ${r.issueUrl}`);
     console.log(`  Response: ${r.botResponse.slice(0, 120).replace(/\n/g, " ")}...`);
     console.log();
@@ -950,6 +1054,11 @@ async function main() {
   console.log(`promptfoo output: ${outputPath}`);
   console.log(`Raw results:      ${rawResultsPath}`);
   console.log(`\nRun 'npx promptfoo view' to see results in browser.\n`);
+
+  const hasPromptfooInvocationError = Boolean(promptfooResult.error) || (promptfooResult.status ?? 1) !== 0;
+  if (hasPromptfooInvocationError || promptfooCounts.failed > 0 || promptfooCounts.errors > 0) {
+    process.exit(1);
+  }
 }
 
 main().catch((error) => {
