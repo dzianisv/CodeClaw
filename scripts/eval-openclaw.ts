@@ -556,9 +556,23 @@ async function emitSyntheticIssueAssignedWebhook(input: {
 }
 
 type AssignmentAttempt = {
-  mode: "direct" | "synthetic" | "failed";
+  mode: "direct" | "failed";
   notes: string[];
 };
+
+function getIssueAssigneeLogins(input: { repo: string; issueNumber: number }): string[] {
+  const raw = gh(["api", `repos/${input.repo}/issues/${input.issueNumber}`]);
+  const issue = JSON.parse(raw) as {
+    assignee?: { login?: string } | null;
+    assignees?: Array<{ login?: string }>;
+  };
+  const fromList = (issue.assignees || [])
+    .map((entry) => (entry.login || "").trim())
+    .filter(Boolean);
+  const fromSingle = issue.assignee?.login?.trim();
+  const merged = fromSingle ? [...fromList, fromSingle] : fromList;
+  return Array.from(new Set(merged.map((login) => login.toLowerCase())));
+}
 
 async function triggerAssignment(input: {
   repo: string;
@@ -581,22 +595,38 @@ async function triggerAssignment(input: {
       (assignee) => (assignee.login || "").toLowerCase() === input.appLogin.toLowerCase(),
     );
     if (assigned) {
-      notes.push(`Direct assignment succeeded for '${input.appLogin}'.`);
+      const assigneeLogins = getIssueAssigneeLogins({
+        repo: input.repo,
+        issueNumber: input.issueNumber,
+      });
+      const persisted = assigneeLogins.includes(input.appLogin.toLowerCase());
+      if (persisted) {
+        notes.push(`Direct assignment succeeded for '${input.appLogin}'.`);
+        return { mode: "direct", notes };
+      }
+      notes.push(
+        `Direct assignment response claimed success but issue assignees are [${assigneeLogins.join(", ") || "none"}].`,
+      );
+      return { mode: "failed", notes };
+    }
+
+    const assigneeLogins = getIssueAssigneeLogins({
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+    });
+    if (assigneeLogins.includes(input.appLogin.toLowerCase())) {
+      notes.push(`Direct assignment verified via issue assignees for '${input.appLogin}'.`);
       return { mode: "direct", notes };
     }
-    notes.push("Direct assignment API call returned without app login in assignees array.");
+    notes.push(
+      `Direct assignment API call returned without app login in assignees array (current assignees: [${assigneeLogins.join(", ") || "none"}]).`,
+    );
+    return { mode: "failed", notes };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     notes.push(`Direct assignment call failed: ${message}`);
+    return { mode: "failed", notes };
   }
-
-  const syntheticOk = await emitSyntheticIssueAssignedWebhook(input);
-  if (syntheticOk) {
-    notes.push("Used synthetic issues.assigned webhook fallback.");
-    return { mode: "synthetic", notes };
-  }
-  notes.push("Synthetic issues.assigned webhook fallback failed.");
-  return { mode: "failed", notes };
 }
 
 /* ------------------------------------------------------------------ */
@@ -762,11 +792,6 @@ async function main() {
       appLogin,
       senderLogin,
     });
-    if (assignment.mode === "failed") {
-      throw new Error(
-        `Assignment trigger failed for case '${evalCase.id}' on ${args.repo}#${issueNumber}: ${assignment.notes.join(" | ")}`,
-      );
-    }
     issueMap.set(evalCase.id, {
       url,
       number: issueNumber,
@@ -779,6 +804,9 @@ async function main() {
     for (const note of assignment.notes) {
       console.log(`    note: ${note}`);
     }
+    if (assignment.mode === "failed") {
+      console.log("    note: strict eval policy keeps this case as FAIL (no synthetic assignment fallback).");
+    }
   }
 
   // ── Phase 2: Wait for bot replies ─────────────────────────────────
@@ -788,7 +816,9 @@ async function main() {
   for (const evalCase of EVAL_CASES) {
     const issue = issueMap.get(evalCase.id)!;
     console.log(`  Waiting for reply on #${issue.number} (${evalCase.id}, trigger=${issue.trigger})...`);
-    const firstWaitSec = issue.trigger === "mention" ? mentionInitialWaitSec : args.timeoutSec;
+    const firstWaitSec = issue.trigger === "mention"
+      ? mentionInitialWaitSec
+      : ((issue.assignmentMode === "failed") ? Math.min(30, args.timeoutSec) : args.timeoutSec);
 
     let reply = await waitForBotReply({
       repo: args.repo,
@@ -805,50 +835,38 @@ async function main() {
     if (!timedOut) {
       console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number}`);
     } else {
-      let syntheticOk = false;
       if (issue.trigger === "mention") {
         if (!issue.mentionComment) {
           throw new Error(`Internal error: mention trigger case missing mentionComment for issue #${issue.number}`);
         }
-        syntheticOk = await emitSyntheticIssueCommentWebhook({
+        const syntheticOk = await emitSyntheticIssueCommentWebhook({
           repo: args.repo,
           issueNumber: issue.number,
           comment: issue.mentionComment,
         });
+        console.log(`  TIMEOUT on #${issue.number} (attempting synthetic issue_comment fallback)`);
+        if (syntheticOk) {
+          const secondWaitSec = mentionFallbackWaitSec;
+          reply = await waitForBotReply({
+            repo: args.repo,
+            issueNumber: issue.number,
+            botLogin,
+            completionMode: evalCase.completionMode,
+            timeoutSec: secondWaitSec,
+            pollSec: args.pollSec,
+          });
+          timedOut = evalCase.completionMode === "started"
+            ? reply.comments.length === 0
+            : !reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
+        }
+        if (timedOut) {
+          console.log(`  Still timed out on #${issue.number}`);
+        } else {
+          console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number} after synthetic fallback`);
+        }
       } else {
-        syntheticOk = await emitSyntheticIssueAssignedWebhook({
-          repo: args.repo,
-          issueNumber: issue.number,
-          appLogin,
-          senderLogin,
-        });
-      }
-      if (issue.trigger === "assignment") {
-        issue.assignmentNotes.push("Primary reply poll timed out; attempted synthetic issues.assigned retry.");
-        if (syntheticOk) issue.assignmentMode = "synthetic";
-      }
-      const fallbackLabel = issue.trigger === "mention" ? "synthetic issue_comment" : "synthetic issues.assigned";
-      console.log(`  TIMEOUT on #${issue.number} (attempting ${fallbackLabel} fallback)`);
-      if (syntheticOk) {
-        const secondWaitSec = issue.trigger === "mention"
-          ? mentionFallbackWaitSec
-          : Math.max(30, Math.floor(args.timeoutSec / 2));
-        reply = await waitForBotReply({
-          repo: args.repo,
-          issueNumber: issue.number,
-          botLogin,
-          completionMode: evalCase.completionMode,
-          timeoutSec: secondWaitSec,
-          pollSec: args.pollSec,
-        });
-        timedOut = evalCase.completionMode === "started"
-          ? reply.comments.length === 0
-          : !reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
-      }
-      if (timedOut) {
-        console.log(`  Still timed out on #${issue.number}`);
-      } else {
-        console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number} after synthetic fallback`);
+        issue.assignmentNotes.push("Primary reply poll timed out; strict mode does not use synthetic assignment retries.");
+        console.log(`  TIMEOUT on #${issue.number} (strict mode: synthetic assignment fallback disabled)`);
       }
     }
 
@@ -860,7 +878,7 @@ async function main() {
     const agentCompleted = reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
     const assignmentTriggerCheck: EvalResult["assignmentTriggerCheck"] =
       evalCase.trigger === "assignment"
-        ? ((issue.assignmentMode === "direct" || issue.assignmentMode === "synthetic") && agentStarted ? "pass" : "fail")
+        ? (issue.assignmentMode === "direct" && agentStarted ? "pass" : "fail")
         : "n/a";
 
     results.push({

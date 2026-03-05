@@ -51,8 +51,9 @@ bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 180 --pol
     - `direct-assignment-no-mention`
 - Assignment trigger acceptance:
   - `trigger_type` must be `assignment`.
-  - `trigger_mode` may be `direct` or `synthetic`.
-  - `trigger_mode=synthetic` is acceptable only when direct assignment failure is documented in `trigger_notes`.
+  - `trigger_mode` must be `direct`.
+  - The target issue must contain the app login in `assignees` (real GitHub assignment, not inferred/synthetic).
+  - Any synthetic assignment fallback is a hard gate failure.
 
 ## Operational E2E Matrix (Readiness, Non-Blocking)
 - Command:
@@ -91,10 +92,8 @@ bun scripts/runGithubMentionE2ETest.ts
 ## Access Requirements
 - `gh` CLI must be authenticated with repo read/write scope for the allowed test target.
 - OpenClaw local credentials must be configured for webhook handling and GitHub app auth.
-- If access is missing (for example assignment API returns `403`), capture that in evidence and rely on supported synthetic fallback where applicable.
-- Synthetic fallback policy:
-  - Allowed for assignment trigger validation in the hard eval gate when direct assignment is denied by repo permissions.
-  - Not allowed to hide unresolved platform/config regressions for tasks explicitly focused on direct assignment permissions.
+- If access is missing (for example assignment API returns `403`, or app login is not assignable), capture that in evidence and keep status **IN PROGRESS**.
+- Assignment-trigger failures must be fixed at platform/config level; they cannot be waived via synthetic webhook fallback.
 
 ## Required Evidence In PR/Issue Updates
 - Exact command(s) executed.
