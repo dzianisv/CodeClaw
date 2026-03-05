@@ -14,10 +14,16 @@ Run an end-to-end validation that GitHub mentions to the configured app handle a
 - You need a production-like regression check.
 
 ## Inputs
-- `issue_url` (required): Full GitHub issue URL to test.
+- `target_url` (required): Full GitHub issue/discussion/PR URL for the selected test case.
 - `app_handle` (required): Mention handle, e.g. `@clawengineer`.
 - `bridge_script` (optional): Defaults to `scripts/start-clawengineer-webhook-bridge.ts`.
 - `timeout_seconds` (optional): Defaults to `180`.
+- `test_case` (required): one of:
+  - `issue-assigned`
+  - `issue-comment-mention`
+  - `discussion-comment-mention`
+  - `pr-comment-mention`
+  - `pr-review-mention`
 
 ## Preconditions
 1. OpenClaw gateway is healthy.
@@ -31,19 +37,39 @@ Run an end-to-end validation that GitHub mentions to the configured app handle a
    - Keep bridge process alive for the full test.
 2. Generate marker:
    - Build unique marker `pw-e2e-<epoch_ms>`.
-3. Post mention in browser:
-   - Navigate to `issue_url`.
-   - Add comment: `<app_handle> <marker>`.
-   - Submit comment.
+3. Trigger selected test case in browser:
+   - `issue-assigned`:
+     - Navigate to `target_url` (issue).
+     - Assign issue to app account (`<app_handle>` without `@`).
+   - `issue-comment-mention`:
+     - Navigate to `target_url` (issue).
+     - Add comment: `<app_handle> <marker>`.
+     - Submit comment.
+   - `discussion-comment-mention`:
+     - Navigate to `target_url` (discussion).
+     - Add comment: `<app_handle> <marker>`.
+     - Submit comment.
+   - `pr-comment-mention`:
+     - Navigate to `target_url` (PR Conversation tab).
+     - Add comment: `<app_handle> <marker>`.
+     - Submit comment.
+   - `pr-review-mention`:
+     - Navigate to `target_url` (PR Files changed tab).
+     - Add review comment or review summary body containing `<app_handle> <marker>`.
+     - Submit review.
 4. Validate ingestion:
-   - Poll OpenClaw session logs for `marker` and hook session key shape `hook:github:<owner>/<repo>:issue:<id>`.
+   - Poll OpenClaw session logs for marker/event and expected session key shape:
+     - issue-assigned / issue-comment-mention: `hook:github:<owner>/<repo>:issue:<id>`
+     - discussion-comment-mention: `hook:github:<owner>/<repo>:discussion:<id>`
+     - pr-comment-mention / pr-review-mention: `hook:github:<owner>/<repo>:pr:<id>`
 5. Validate GitHub reply:
-   - In browser, refresh issue comments until a new comment from `<app_handle>[bot]` (or expected app bot login) appears.
+   - In browser, refresh thread until a new comment/reply from `<app_handle>[bot]` (or expected app bot login) appears.
    - Confirm reply text references event/request context.
 6. Capture evidence:
    - Record:
+     - test_case
      - marker
-     - issue URL
+     - target URL
      - user comment URL/id
      - bot reply URL/id
      - OpenClaw session key
