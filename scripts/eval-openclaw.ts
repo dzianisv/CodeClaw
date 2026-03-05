@@ -656,6 +656,8 @@ function isCompletionSignal(body: string): boolean {
   if (isProgressOnlyBotComment(body)) return false;
   const completionPatterns = [
     /\b(created|implemented|added|completed|done)\b/i,
+    /\b(successfully|finished|resolved|answered)\b/i,
+    /\b(task|request|issue)\s+(completed|done|resolved)\b/i,
     /\b(gpt-1|june\s+2018)\b/i,
     /```[\s\S]+```/m,
   ];
