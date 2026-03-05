@@ -110,6 +110,28 @@ function killByPattern(pattern: string) {
   spawnSync("pkill", ["-f", pattern], { stdio: "ignore" });
 }
 
+function killListenersOnPort(port: number) {
+  const probe = spawnSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  if (probe.status !== 0 || !probe.stdout?.trim()) return;
+  const pids = probe.stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter((entry) => /^\d+$/.test(entry))
+    .map((entry) => Number(entry))
+    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid);
+
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function sanitizeHeaderValue(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value.join(",");
   return value ?? "";
@@ -126,6 +148,7 @@ async function main() {
 
   killByPattern(`cloudflared tunnel --url http://127.0.0.1:${relayPort}`);
   killByPattern("/tmp/github-openclaw-relay.mjs");
+  killListenersOnPort(relayPort);
 
   writeFileSync(relayLogPath, "", { encoding: "utf8", mode: 0o600 });
   writeFileSync(cloudflaredLogPath, "", { encoding: "utf8", mode: 0o600 });
@@ -177,7 +200,12 @@ async function main() {
     }
   });
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    relayServer.once("error", (error) => {
+      const message =
+        error instanceof Error ? error.message : `unknown error while binding port ${relayPort}`;
+      reject(new Error(`Failed to start relay on 127.0.0.1:${relayPort}: ${message}`));
+    });
     relayServer.listen(relayPort, "127.0.0.1", () => {
       logRelay(`relay_listening http://127.0.0.1:${relayPort}`);
       resolve();
@@ -191,6 +219,12 @@ async function main() {
     ["tunnel", "--url", `http://127.0.0.1:${relayPort}`, "--no-autoupdate"],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
+  cloudflared.once("error", (error) => {
+    fail(`Failed to start cloudflared process: ${error instanceof Error ? error.message : String(error)}`);
+  });
+  if (!cloudflared.stdout || !cloudflared.stderr) {
+    fail("Failed to capture cloudflared output streams.");
+  }
 
   const onCloudflaredData = (chunk: Buffer | string) => {
     const text = String(chunk);
@@ -201,8 +235,8 @@ async function main() {
       if (match?.[0]) tunnelUrl = match[0];
     }
   };
-  cloudflared.stdout?.on("data", onCloudflaredData);
-  cloudflared.stderr?.on("data", onCloudflaredData);
+  cloudflared.stdout.on("data", onCloudflaredData);
+  cloudflared.stderr.on("data", onCloudflaredData);
 
   const waitStart = Date.now();
   while (!tunnelUrl) {
