@@ -116,6 +116,9 @@ function gh(ghArgs: string[]): string {
     env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" },
     encoding: "utf-8",
   });
+  if (result.error) {
+    throw new Error(`gh ${ghArgs.join(" ")} failed to start: ${result.error.message}`);
+  }
   if (result.status !== 0) {
     throw new Error(`gh ${ghArgs.join(" ")} failed: ${result.stderr || result.stdout}`);
   }
@@ -203,6 +206,23 @@ function getIssueFileChanges(repo: string, issueNumber: number): string | null {
   return null;
 }
 
+function createIssue(input: { repo: string; title: string; body: string }): { url: string; number: number } {
+  const raw = gh([
+    "api",
+    "-X", "POST",
+    `repos/${input.repo}/issues`,
+    "-f", `title=${input.title}`,
+    "-f", `body=${input.body}`,
+  ]);
+  const issue = JSON.parse(raw) as { html_url?: string; number?: number };
+  const url = issue.html_url ?? "";
+  const number = Number(issue.number);
+  if (!url || !Number.isFinite(number) || number <= 0) {
+    throw new Error(`Failed to create issue in ${input.repo}. Raw response: ${raw}`);
+  }
+  return { url, number };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main                                                               */
 /* ------------------------------------------------------------------ */
@@ -232,6 +252,9 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const now = Date.now();
   const botLogin = args.appHandle.replace(/^@/, "") + "[bot]";
+  if (!process.env.AZURE_OPENAI_API_KEY) {
+    throw new Error("AZURE_OPENAI_API_KEY is required for llm-rubric grading.");
+  }
   const azureApiBaseUrl = normalizeAzureBaseUrl(process.env.AZURE_OPENAI_BASE_URL);
   const azureApiHost = new URL(azureApiBaseUrl).host;
 
@@ -248,16 +271,13 @@ async function main() {
 
   for (const evalCase of EVAL_CASES) {
     const title = `[eval] ${evalCase.title} (${now})`;
-    const url = gh([
-      "issue", "create",
-      "--repo", args.repo,
-      "--title", title,
-      "--body", `Automated eval case: ${evalCase.id}`,
-    ]);
-    const issueNumber = Number(url.match(/\/issues\/(\d+)/)?.[1]);
-    if (!Number.isFinite(issueNumber) || issueNumber <= 0) {
-      throw new Error(`Failed to parse issue number from URL: ${url}`);
-    }
+    const created = createIssue({
+      repo: args.repo,
+      title,
+      body: `Automated eval case: ${evalCase.id}`,
+    });
+    const url = created.url;
+    const issueNumber = created.number;
     issueMap.set(evalCase.id, { url, number: issueNumber });
     console.log(`  Created ${evalCase.id} → ${url}`);
 
