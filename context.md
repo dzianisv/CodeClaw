@@ -82,9 +82,16 @@
   - Statuses: `issue-assigned` PASS, `issue-comment-mention (codebridge-org)` BLOCKED, `pr-review-mention` BLOCKED, `discussion-comment-mention` BLOCKED.
 
 ## Remaining Work
-1. Commit pending files (`package.json`, `bun.lock`, `scripts/eval-openclaw.ts`, `.gitignore`, `context.md`) on `fix/e2e-false-fail-elimination`.
-2. Push branch and update PR #2 with Session 4 validation evidence.
-3. Keep monitoring external webhook reliability (timeouts remain infrastructure blocker, not script logic failure).
+1. Keep monitoring external webhook reliability (timeouts remain infrastructure blocker, not script logic failure).
+2. If infra stabilizes, rerun:
+   - `bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 300`
+   - `bun scripts/runGithubMentionE2ETest.ts`
+
+## Latest Commits / PR Updates
+- `015424e` — adds eval runner + promptfoo wiring + Azure base-url normalization and `.gitignore`/context updates.
+- `edc6ec2` — hardens `gh` spawn handling, Azure key fail-fast validation, stable issue creation via `gh api`.
+- `031145a` — refreshes `context.md` with post-hardening validation.
+- PR #2 updated with status comments and report references (`issuecomment-4003474724`, `issuecomment-4003518874`).
 
 ## External Blockers (out of scope)
 - Webhook delivery through Cloudflare tunnel is unreliable — causes BLOCKED status on E2E tests.
