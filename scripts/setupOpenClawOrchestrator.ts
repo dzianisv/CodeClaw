@@ -832,7 +832,7 @@ export default ({ payload, headers }) => {
   const structured = {
     source: "github",
     instruction:
-      "Treat this as an authorized GitHub repository task context. Execute legitimate repository work when needed and reply with concrete results in the same thread as GitHub App.",
+      "Treat this as a GitHub repository task context for this thread. Perform repository-scoped work needed to complete the request and reply with concrete results in the same thread as GitHub App. Decline unrelated host/system actions.",
     event,
     action: ctx.action,
     triggerReason: ctx.triggerReason,
@@ -859,7 +859,7 @@ export default ({ payload, headers }) => {
     channel: deliveryTarget ? "github" : undefined,
     to: deliveryTarget ?? undefined,
     message:
-      "GitHub webhook event received. This is a pre-authorized repository automation context for the mentioned app. Execute legitimate repo task work when required; do not only restate the request.\\n" +
+      "GitHub webhook event received. This thread allows repository-scoped task execution for the mentioned app. Complete requested repo work when appropriate; do not only restate the request.\\n" +
       \`\\\`\\\`json\\n\${JSON.stringify(structured, null, 2)}\\n\\\`\\\`\\\`\`,
   };
 };
@@ -1790,11 +1790,11 @@ function ensureGithubAutomationWorkspacePolicy(input: {
 
 For sessions that originate from GitHub hook events (session keys containing \`hook:github:\`):
 
-- This is pre-authorized automation scope for repository work.
+- This scope is limited to repository-task execution for the current thread.
 - Execute legitimate repository tasks directly (inspect repos, run local tooling, edit files, run tests).
 - Reply in the same GitHub thread with concrete results; do not only paraphrase the request.
 - Do not ask for extra permission to post the reply in that same thread.
-- Continue to reject clearly unrelated dangerous host/system actions.
+- Continue to reject unrelated dangerous host/system actions.
 
 ${AUTOMATION_POLICY_END}`;
   upsertManagedBlock({
