@@ -1,62 +1,83 @@
 # Mission Summary
 
 ## Mission
-Make this project work as an orchestrator for Codex by reviewing current changes and making the E2E test matrix pass without false failures.
+1. Make the E2E test matrix (`scripts/runGithubMentionE2ETest.ts`) pass without false failures.
+2. Build a promptfoo-based eval script (`scripts/eval-openclaw.ts`) that posts `@clawengineer` mentions on GitHub issues, collects bot replies, and uses LLM-as-judge scoring.
+
+## Constraints
+- **Test repos**: ONLY `dzianisv/codebridge-test` (user-level) and `VibeTechnologies/codebridge-test` (org-level). NEVER use `dzianisv/AiDocumentsOrganizer` or `dzianisv/openhaystack-web`.
+- **Branch**: All changes on `fix/e2e-false-fail-elimination`, NOT `main`.
+- **PR**: https://github.com/dzianisv/CodeClaw/pull/2
+- **`gh` CLI auth**: Use `GITHUB_TOKEN="" GH_TOKEN="" gh ...` to access valid `dzianisv` keyring token.
+- **LLM keys**: No `OPENAI_API_KEY` available. Use `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_BASE_URL` (deployment: `gpt-4.1`, host: `vibebrowser-dev.openai.azure.com`).
+- **App handle**: `@clawengineer`, bot login: `clawengineer[bot]`.
 
 ## What Was Done
 
-### Session 1 (Codex)
-- Reviewed all current local changes in:
-  - `scripts/runGithubMentionE2ETest.ts`
-  - `README.md`
-  - skill docs under `.agents/skills/*`
+### Session 1 (Codex) — E2E test hardening
 - Fixed regressions and flaky behavior in `scripts/runGithubMentionE2ETest.ts`:
-  - Updated defaults to `VibeTechnologies/codebridge-test` (`issue=1`) and made PR/discussion tests opt-in (`TEST_PR_NUMBER > 0`, `TEST_DISCUSSION_NUMBER > 0`).
-  - Added guarded skip behavior (`BLOCKED`) for optional PR/discussion checks when not configured.
-  - Reworked synthetic `issues.assigned` fallback to avoid false `FAIL` when app is not installed on the synthetic target repo.
-  - Added ingress wait and fixed timestamp race in synthetic assignment polling.
-  - Restored configured issue mention coverage (`TEST_ISSUE_REPO` / `TEST_ISSUE_NUMBER`) and preserved explicit `codebridge-org` validation when target differs.
-  - Simplified status/block-reason logic for clarity.
-- Updated docs to match behavior:
-  - `README.md` env override semantics.
-  - `.agents/skills/github-mention-e2e-runner/SKILL.md` matrix expectations.
-  - Related skill docs updated for optional PR/discussion targets.
-- Ran required kilocode reviews on the diff and incorporated actionable findings.
-- Created and updated GitHub tracking issue and closed it:
-  - `dzianisv/CodeClaw#1`
+  - Updated defaults to `VibeTechnologies/codebridge-test` (`issue=1`), PR/discussion tests opt-in.
+  - Added guarded skip behavior (`BLOCKED`) for optional PR/discussion checks.
+  - Reworked synthetic `issues.assigned` fallback.
+  - Restored configured issue mention coverage and preserved explicit `codebridge-org` validation.
+- Updated docs: `README.md`, `.agents/skills/` skill docs.
+- Created/closed tracking issue `dzianisv/CodeClaw#1`.
 
-### Session 2 (OpenCode)
-- Diagnosed root cause of false FAILs: `testIssueMention` and `testPrReviewMention` used immediate `findMarkerIngress(marker)` instead of polling `waitForMarkerIngress(marker, timeout)`. When GitHub webhooks were delayed or lost through the Cloudflare tunnel, no ingress was detected and the test reported `FAIL` even though the code was correct.
-- Implemented three-tier status logic across all test functions:
-  - `PASS` — ingress detected AND bot replied (or ingress alone for synthetic assignment)
-  - `BLOCKED` — no ingress detected after polling (infrastructure/tunnel issue, not a code failure)
-  - `FAIL` — ingress detected but bot didn't reply (genuine application failure)
-- Specific fixes in `scripts/runGithubMentionE2ETest.ts`:
-  - `testIssueMention`: Replaced `findMarkerIngress` with `waitForMarkerIngress(marker, 30)`. Returns `BLOCKED` when no ingress detected.
-  - `testPrReviewMention`: Same pattern — uses `waitForMarkerIngress` and returns `BLOCKED` on no ingress.
-  - `testIssueAssigned`: Simplified — ingress detected = `PASS` (proves webhook pipeline), no ingress = `BLOCKED`.
-- Added `.gitignore` (reports/, node_modules/, .env, .DS_Store, logs).
-- Verified no references to `dzianisv/AiDocumentsOrganizer` in test defaults.
+### Session 2 (OpenCode) — False FAIL elimination
+- Root cause: `testIssueMention` and `testPrReviewMention` used immediate `findMarkerIngress(marker)` instead of polling `waitForMarkerIngress(marker, timeout)`. Cloudflare tunnel delays caused false FAILs.
+- Implemented three-tier status logic:
+  - `PASS` — ingress detected AND bot replied
+  - `BLOCKED` — no ingress detected after polling (infrastructure issue)
+  - `FAIL` — ingress detected but bot didn't reply (genuine bug)
+- Added `.gitignore`.
+- Committed (`97d0efe`), pushed, created PR #2.
+
+### Session 3 (OpenCode) — Eval script creation
+- Read and analyzed CodeBridge reference eval (`/Users/engineer/workspace/CodeBridge/scripts/eval-codex-quality.ts`, 494 lines).
+- Created `scripts/eval-openclaw.ts` (434 lines) — posts 3 eval tasks as GitHub issues with `@clawengineer` mentions, polls for bot replies, writes promptfoo-compatible JSON config with `llm-rubric` assertions, runs `npx promptfoo eval`.
+- 3 eval scenarios: (1) Python hello world, (2) TypeScript/Bun hello world, (3) Research question about first GPT release date.
+- Created `package.json` with `promptfoo` dependency.
+- Removed stale `scripts/eval-codex-quality.ts` (superseded by `eval-openclaw.ts`).
+- Fixed rubric provider: switched from `openai:gpt-4o` to Azure `gpt-4.1` deployment (confirmed working via curl).
+
+### Session 4 (Codex) — Runtime fixes + full validation
+- Re-ran `bun install`; initially failed with `ENOSPC`, then succeeded after clearing transient Bun cache.
+- Fixed eval runtime defects in `scripts/eval-openclaw.ts`:
+  - `gh` wrapper now forces keyring auth by setting `GITHUB_TOKEN=""` and `GH_TOKEN=""`.
+  - Added issue-number parse guard after `gh issue create`.
+  - Corrected partial-reply timing threshold math.
+  - Normalized Azure base URL from `AZURE_OPENAI_BASE_URL` to origin (e.g. `https://vibebrowser-dev.openai.azure.com`) to avoid `404 Resource not found` in promptfoo grading.
+  - Switched grader provider id to `azure:chat:gpt-4.1` with explicit `apiBaseUrl` + `apiHost`.
+  - Switched promptfoo invocation to local `node_modules/.bin/promptfoo` when available (fallback `npx promptfoo@latest`).
+  - Promptfoo non-zero exits now reported as scored eval outcome instead of hard script failure.
 
 ## Validation Performed
 
-### Session 1 Reports
-- Default run: `reports/codebridge-test-report-2026-03-05T06-48-57-381Z.json` — no unexpected `FAIL`.
-- Override run: `reports/codebridge-test-report-2026-03-05T06-49-51-783Z.json` — issue-assigned PASS, pr-review PASS, codebridge-org BLOCKED (app not on org), discussion BLOCKED (outbound limitation).
+### E2E Reports (Sessions 1-2)
+- Default run: zero false FAILs.
+- Override run (`dzianisv/codebridge-test`): `issue-assigned` PASS, rest BLOCKED (infra), zero false FAILs.
 
-### Session 2 Reports (after fix)
-- Default run: `reports/codebridge-test-report-2026-03-05T07-22-40-245Z.json` — zero false FAILs.
-- Override run (`dzianisv/codebridge-test`): `reports/codebridge-test-report-2026-03-05T07-44-07-429Z.json`:
-  - `issue-assigned (org codebridge-test)`: **PASS** (synthetic webhook pipeline proven)
-  - `issue-comment-mention (issue)`: **BLOCKED** (webhook didn't arrive via tunnel)
-  - `issue-comment-mention (codebridge-org)`: **BLOCKED** (webhook didn't arrive via tunnel)
-  - `pr-review-mention`: **BLOCKED** (opt-in, not configured)
-  - `discussion-comment-mention`: **BLOCKED** (opt-in, not configured)
+### Session 4 validation
+- Compile check:
+  - `bun build --target=bun scripts/eval-openclaw.ts` (PASS)
+- Eval smoke run:
+  - `bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 5`
+  - Report: `reports/eval-output-2026-03-05T08-39-29-653Z.json`
+  - Result: 3/3 FAIL due timeout (expected infra), but rubric grading executed with Azure tokens (no 404).
+- Full eval run (required command):
+  - `bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 300`
+  - Report: `reports/eval-output-2026-03-05T08-55-37-423Z.json`
+  - Result: 3/3 FAIL due no bot replies within timeout; promptfoo grading completed successfully (no provider/config errors).
+- E2E matrix rerun after eval script fixes:
+  - `bun scripts/runGithubMentionE2ETest.ts`
+  - Report: `reports/codebridge-test-report-2026-03-05T09-01-40-582Z.json`
+  - Statuses: `issue-assigned` PASS, `issue-comment-mention (codebridge-org)` BLOCKED, `pr-review-mention` BLOCKED, `discussion-comment-mention` BLOCKED.
 
-## What Was Not Done
-- External platform constraints (out of scope for code changes):
-  - Discussion outbound reply remains `BLOCKED` due to current channel target format limitation in OpenClaw.
+## Remaining Work
+1. Commit pending files (`package.json`, `bun.lock`, `scripts/eval-openclaw.ts`, `.gitignore`, `context.md`) on `fix/e2e-false-fail-elimination`.
+2. Push branch and update PR #2 with Session 4 validation evidence.
+3. Keep monitoring external webhook reliability (timeouts remain infrastructure blocker, not script logic failure).
 
-## Next Steps
-1. Implement/fix GitHub discussion outbound target handling in OpenClaw to remove `discussion-comment-mention` block condition.
-2. Re-run `bun scripts/runGithubMentionE2ETest.ts` after each external change and archive new report artifacts.
+## External Blockers (out of scope)
+- Webhook delivery through Cloudflare tunnel is unreliable — causes BLOCKED status on E2E tests.
+- Discussion outbound reply remains BLOCKED due to OpenClaw channel target format limitation.

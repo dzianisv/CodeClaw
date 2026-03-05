@@ -13,3 +13,6 @@ node_modules/
 
 # Debug logs
 *.log
+
+# Agent internal state
+.reflection/

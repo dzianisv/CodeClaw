@@ -1,0 +1,14 @@
+{
+  "name": "codeclaw",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CodeClaw/OpenClaw orchestrator – GitHub App webhook bridge and E2E evaluation",
+  "scripts": {
+    "e2e": "bun scripts/runGithubMentionE2ETest.ts",
+    "eval": "bun scripts/eval-openclaw.ts"
+  },
+  "dependencies": {
+    "promptfoo": "^0.120.0"
+  }
+}
