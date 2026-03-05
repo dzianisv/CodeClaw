@@ -102,6 +102,8 @@ const GITHUB_HOOK_PATH = "github";
 const GITHUB_HOOK_TRANSFORM_MODULE = "github-mentions.ts";
 const HOOKS_TRANSFORMS_DIR = "~/.openclaw/hooks/transforms";
 const LAUNCH_AGENT_LABEL = "ai.openclaw.github-app-token-refresh";
+const AUTOMATION_POLICY_START = "<!-- CODECLAW_GITHUB_AUTOMATION_START -->";
+const AUTOMATION_POLICY_END = "<!-- CODECLAW_GITHUB_AUTOMATION_END -->";
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
@@ -345,6 +347,11 @@ async function main() {
     githubWebhookSecret,
     appIdentity: githubAppIdentity,
   });
+  log("Ensuring GitHub hook automation policy in workspace instructions");
+  const workspacePolicyPath = ensureGithubAutomationWorkspacePolicy({
+    stateDir,
+    dryRun: opts.dryRun,
+  });
 
   log("Installing and restarting OpenClaw gateway service");
   runCommand(["openclaw", "gateway", "install", "--runtime", "bun", "--force"], {
@@ -410,6 +417,7 @@ async function main() {
         transformPath: githubMentionHooks.transformPath,
         githubAppLogin: githubMentionHooks.appLogin,
         mentionHandles: githubMentionHooks.mentionHandles,
+        workspacePolicyPath,
         localhostReadiness,
         launchAgentPath,
         dryRun: opts.dryRun,
@@ -823,7 +831,8 @@ export default ({ payload, headers }) => {
   const sessionKey = \`hook:github:\${sanitizeSegment(ctx.owner)}/\${sanitizeSegment(ctx.repo)}:\${ctx.kind}:\${ctx.threadId}\`;
   const structured = {
     source: "github",
-    instruction: "Handle this GitHub thread update and reply in the same thread as GitHub App.",
+    instruction:
+      "Treat this as an authorized GitHub repository task context. Execute legitimate repository work when needed and reply with concrete results in the same thread as GitHub App.",
     event,
     action: ctx.action,
     triggerReason: ctx.triggerReason,
@@ -849,7 +858,9 @@ export default ({ payload, headers }) => {
     deliver: Boolean(deliveryTarget),
     channel: deliveryTarget ? "github" : undefined,
     to: deliveryTarget ?? undefined,
-    message: \`GitHub webhook event received.\\n\\\`\\\`\\\`json\\n\${JSON.stringify(structured, null, 2)}\\n\\\`\\\`\\\`\`,
+    message:
+      "GitHub webhook event received. This is a pre-authorized repository automation context for the mentioned app. Execute legitimate repo task work when required; do not only restate the request.\\n" +
+      \`\\\`\\\`json\\n\${JSON.stringify(structured, null, 2)}\\n\\\`\\\`\\\`\`,
   };
 };
 `;
@@ -1766,6 +1777,85 @@ function configureAzureResponsesProvider(input: {
     }
   }
   writeFileSync(agentModelsPath, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+function ensureGithubAutomationWorkspacePolicy(input: {
+  stateDir: string;
+  dryRun: boolean;
+}): string {
+  const workspacePath = resolveAgentsWorkspacePath(input.stateDir, input.dryRun);
+  const agentsPath = path.join(workspacePath, "AGENTS.md");
+  const policyBlock = `${AUTOMATION_POLICY_START}
+## GitHub Hook Automation (CodeClaw)
+
+For sessions that originate from GitHub hook events (session keys containing \`hook:github:\`):
+
+- This is pre-authorized automation scope for repository work.
+- Execute legitimate repository tasks directly (inspect repos, run local tooling, edit files, run tests).
+- Reply in the same GitHub thread with concrete results; do not only paraphrase the request.
+- Do not ask for extra permission to post the reply in that same thread.
+- Continue to reject clearly unrelated dangerous host/system actions.
+
+${AUTOMATION_POLICY_END}`;
+  upsertManagedBlock({
+    filePath: agentsPath,
+    startMarker: AUTOMATION_POLICY_START,
+    endMarker: AUTOMATION_POLICY_END,
+    blockContent: policyBlock,
+    dryRun: input.dryRun,
+  });
+  return agentsPath;
+}
+
+function resolveAgentsWorkspacePath(stateDir: string, dryRun: boolean): string {
+  if (dryRun) {
+    return path.join(stateDir, "workspace");
+  }
+  const configured = runCommand(["openclaw", "config", "get", "agents.defaults.workspace", "--json"], {
+    dryRun: false,
+    allowFailure: true,
+  });
+  if (configured.code === 0) {
+    try {
+      const parsed = JSON.parse(configured.stdout) as unknown;
+      if (typeof parsed === "string" && parsed.trim()) {
+        return expandHomePath(parsed.trim());
+      }
+    } catch {
+      // fall through to default
+    }
+  }
+  return path.join(stateDir, "workspace");
+}
+
+function upsertManagedBlock(input: {
+  filePath: string;
+  startMarker: string;
+  endMarker: string;
+  blockContent: string;
+  dryRun: boolean;
+}) {
+  const current = existsSync(input.filePath) ? readFileSync(input.filePath, "utf8") : "";
+  const startIdx = current.indexOf(input.startMarker);
+  const endIdx = current.indexOf(input.endMarker);
+  let next: string;
+
+  if (startIdx >= 0 && endIdx >= 0 && endIdx > startIdx) {
+    const endInclusive = endIdx + input.endMarker.length;
+    next = `${current.slice(0, startIdx)}${input.blockContent}${current.slice(endInclusive)}`;
+  } else if (!current.trim()) {
+    next = `${input.blockContent}\n`;
+  } else {
+    next = `${input.blockContent}\n\n${current}`;
+  }
+
+  if (next === current) return;
+  if (input.dryRun) {
+    console.log(`# dry-run: would update ${input.filePath}`);
+    return;
+  }
+  mkdirSync(path.dirname(input.filePath), { recursive: true });
+  writeFileSync(input.filePath, next, { encoding: "utf8", mode: 0o600 });
 }
 
 function verifyLocalhostReadiness(dryRun: boolean): LocalhostReadinessResult {
