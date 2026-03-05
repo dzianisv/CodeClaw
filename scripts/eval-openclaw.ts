@@ -16,7 +16,9 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 
 /* ------------------------------------------------------------------ */
@@ -132,6 +134,13 @@ type BotComment = {
   user: { login: string };
 };
 
+type IssueComment = {
+  id: number;
+  body: string;
+  html_url: string;
+  user: { login: string; type?: string };
+};
+
 /**
  * Wait for bot reply on an issue. Polls until "complete" appears in a
  * bot comment or timeout is reached (returns partial if available).
@@ -223,6 +232,228 @@ function createIssue(input: { repo: string; title: string; body: string }): { ur
   return { url, number };
 }
 
+function createIssueComment(input: { repo: string; issueNumber: number; body: string }): IssueComment {
+  const raw = gh([
+    "api",
+    "-X", "POST",
+    `repos/${input.repo}/issues/${input.issueNumber}/comments`,
+    "-f", `body=${input.body}`,
+  ]);
+  const comment = JSON.parse(raw) as IssueComment;
+  if (!comment?.id || !comment?.html_url) {
+    throw new Error(`Failed to create issue comment in ${input.repo}#${input.issueNumber}. Raw response: ${raw}`);
+  }
+  return comment;
+}
+
+function parseDotEnv(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const idx = trimmed.indexOf("=");
+    if (idx <= 0) continue;
+    const key = trimmed.slice(0, idx).trim();
+    let value = trimmed.slice(idx + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+function sanitizeEnvKey(value: string): string {
+  return value
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
+function tokenFingerprint(token: string): string {
+  if (!token) return "none";
+  const hash = createHash("sha256").update(token).digest("hex");
+  return `${token.slice(0, 4)}…${hash.slice(0, 8)}`;
+}
+
+function runCli(binary: string, args: string[]): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync(binary, args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" },
+    encoding: "utf-8",
+  });
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+}
+
+function ensureOpenClawGithubTokenForRepo(repo: string): void {
+  const [owner] = repo.split("/");
+  if (!owner) {
+    throw new Error(`Invalid --repo value: "${repo}"`);
+  }
+
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), ".openclaw");
+  const envPath = path.join(stateDir, ".env");
+  const configPath = path.join(stateDir, "openclaw.json");
+  const envVars = existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+  const ownerTokenKey = `GITHUB_APP_TOKEN_${sanitizeEnvKey(owner)}`;
+  const desiredToken = process.env[ownerTokenKey]?.trim() || envVars[ownerTokenKey]?.trim() || "";
+  if (!desiredToken) {
+    console.log(
+      `  WARNING: Owner-scoped token "${ownerTokenKey}" not found; keeping current OpenClaw token configuration.`,
+    );
+    return;
+  }
+
+  let configToken = "";
+  if (existsSync(configPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
+        channels?: { github?: { token?: string } };
+      };
+      configToken = parsed.channels?.github?.token?.trim() || "";
+    } catch {
+      // ignore malformed local config read; CLI set below is source of truth
+    }
+  }
+
+  const launchctlGet = runCli("launchctl", ["getenv", "OPENCLAW_GITHUB_TOKEN"]);
+  const launchctlToken = launchctlGet.status === 0 ? launchctlGet.stdout.trim() : "";
+  const aligned = configToken === desiredToken && launchctlToken === desiredToken;
+  if (aligned) {
+    console.log(`  OpenClaw GitHub token already aligned for owner "${owner}" (${tokenFingerprint(desiredToken)}).`);
+    return;
+  }
+
+  console.log(`  Aligning OpenClaw GitHub token for owner "${owner}" (${tokenFingerprint(desiredToken)})...`);
+
+  const setChannelToken = runCli("openclaw", ["config", "set", "channels.github.token", desiredToken]);
+  if (setChannelToken.status !== 0) {
+    throw new Error(`Failed to set channels.github.token: ${setChannelToken.stderr || setChannelToken.stdout}`);
+  }
+
+  const setSkillToken = runCli("openclaw", ["config", "set", 'skills.entries["gh-issues"].apiKey', desiredToken]);
+  if (setSkillToken.status !== 0) {
+    throw new Error(`Failed to set gh-issues apiKey: ${setSkillToken.stderr || setSkillToken.stdout}`);
+  }
+
+  const setLaunchToken = runCli("launchctl", ["setenv", "OPENCLAW_GITHUB_TOKEN", desiredToken]);
+  if (setLaunchToken.status !== 0) {
+    throw new Error(`Failed to set launchctl OPENCLAW_GITHUB_TOKEN: ${setLaunchToken.stderr || setLaunchToken.stdout}`);
+  }
+
+  const restart = runCli("openclaw", ["gateway", "restart"]);
+  if (restart.status !== 0) {
+    throw new Error(`Failed to restart OpenClaw gateway: ${restart.stderr || restart.stdout}`);
+  }
+  console.log("  OpenClaw gateway restarted to apply owner-scoped GitHub token.");
+}
+
+function loadOpenClawWebhookEnv(): {
+  hooksToken: string;
+  webhookSecret: string;
+  hookTarget: string;
+} {
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), ".openclaw");
+  const envPath = path.join(stateDir, ".env");
+  const fromFile = existsSync(envPath) ? parseDotEnv(readFileSync(envPath, "utf8")) : {};
+
+  const hooksToken =
+    process.env.OPENCLAW_HOOKS_TOKEN?.trim() ||
+    fromFile.OPENCLAW_HOOKS_TOKEN?.trim() ||
+    "";
+  const webhookSecret =
+    process.env.GITHUB_APP_WEBHOOK_SECRET?.trim() ||
+    process.env.OPENCLAW_GITHUB_WEBHOOK_SECRET?.trim() ||
+    fromFile.GITHUB_APP_WEBHOOK_SECRET?.trim() ||
+    fromFile.OPENCLAW_GITHUB_WEBHOOK_SECRET?.trim() ||
+    "";
+  const hookTarget =
+    process.env.OPENCLAW_HOOK_TARGET?.trim() ||
+    "http://127.0.0.1:18789/hooks/github";
+
+  return { hooksToken, webhookSecret, hookTarget };
+}
+
+async function emitSyntheticIssueCommentWebhook(input: {
+  repo: string;
+  issueNumber: number;
+  comment: IssueComment;
+}): Promise<boolean> {
+  const { hooksToken, webhookSecret, hookTarget } = loadOpenClawWebhookEnv();
+  if (!hooksToken || !webhookSecret) {
+    console.log("  WARNING: Synthetic webhook fallback skipped (missing OPENCLAW_HOOKS_TOKEN or webhook secret).");
+    return false;
+  }
+  const [owner, repoName] = input.repo.split("/");
+  if (!owner || !repoName) {
+    console.log(`  WARNING: Synthetic webhook fallback skipped (invalid repo format: ${input.repo}).`);
+    return false;
+  }
+
+  const issueRaw = gh(["api", `repos/${input.repo}/issues/${input.issueNumber}`]);
+  const issue = JSON.parse(issueRaw) as {
+    number: number;
+    title?: string;
+    html_url?: string;
+    assignee?: unknown;
+    assignees?: unknown[];
+    pull_request?: unknown;
+  };
+
+  const payload = {
+    action: "created",
+    issue: {
+      number: issue.number,
+      title: issue.title ?? "",
+      html_url: issue.html_url ?? "",
+      assignee: issue.assignee ?? null,
+      assignees: issue.assignees ?? [],
+      pull_request: issue.pull_request,
+    },
+    comment: {
+      id: input.comment.id,
+      body: input.comment.body,
+      html_url: input.comment.html_url,
+      user: input.comment.user,
+    },
+    repository: {
+      name: repoName,
+      owner: { login: owner },
+    },
+    sender: input.comment.user,
+    installation: { id: null },
+  };
+
+  const rawBody = JSON.stringify(payload);
+  const signature = `sha256=${createHmac("sha256", webhookSecret).update(rawBody).digest("hex")}`;
+  const response = await fetch(hookTarget, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-openclaw-token": hooksToken,
+      "x-github-event": "issue_comment",
+      "x-github-delivery": randomUUID(),
+      "x-hub-signature-256": signature,
+    },
+    body: rawBody,
+  });
+  const responseText = await response.text();
+  if (!response.ok) {
+    console.log(`  WARNING: Synthetic webhook fallback failed (${response.status}): ${responseText.slice(0, 240)}`);
+    return false;
+  }
+  console.log(`  Synthetic webhook delivered to ${hookTarget}`);
+  return true;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Main                                                               */
 /* ------------------------------------------------------------------ */
@@ -250,6 +481,7 @@ function normalizeAzureBaseUrl(raw: string | undefined): string {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  ensureOpenClawGithubTokenForRepo(args.repo);
   const now = Date.now();
   const botLogin = args.appHandle.replace(/^@/, "") + "[bot]";
   if (!process.env.AZURE_OPENAI_API_KEY) {
@@ -263,11 +495,12 @@ async function main() {
   console.log(`Bot: ${botLogin}`);
   console.log(`Azure API base: ${azureApiBaseUrl}`);
   console.log(`Timeout: ${args.timeoutSec}s per task`);
+  console.log(`Synthetic webhook fallback: enabled`);
   console.log(`Cases: ${EVAL_CASES.length}\n`);
 
   // ── Phase 1: Create issues and post mentions ──────────────────────
   console.log("--- Phase 1: Creating issues and posting mentions ---\n");
-  const issueMap = new Map<string, { url: string; number: number }>();
+  const issueMap = new Map<string, { url: string; number: number; mentionComment: IssueComment }>();
 
   for (const evalCase of EVAL_CASES) {
     const title = `[eval] ${evalCase.title} (${now})`;
@@ -278,17 +511,16 @@ async function main() {
     });
     const url = created.url;
     const issueNumber = created.number;
-    issueMap.set(evalCase.id, { url, number: issueNumber });
     console.log(`  Created ${evalCase.id} → ${url}`);
 
     // Post the mention comment
-    gh([
-      "issue", "comment",
-      String(issueNumber),
-      "--repo", args.repo,
-      "--body", evalCase.prompt,
-    ]);
-    console.log(`  Posted mention on #${issueNumber}`);
+    const mentionComment = createIssueComment({
+      repo: args.repo,
+      issueNumber,
+      body: evalCase.prompt,
+    });
+    issueMap.set(evalCase.id, { url, number: issueNumber, mentionComment });
+    console.log(`  Posted mention on #${issueNumber} (${mentionComment.html_url})`);
   }
 
   // ── Phase 2: Wait for bot replies ─────────────────────────────────
@@ -299,7 +531,7 @@ async function main() {
     const issue = issueMap.get(evalCase.id)!;
     console.log(`  Waiting for reply on #${issue.number} (${evalCase.id})...`);
 
-    const reply = await waitForBotReply({
+    let reply = await waitForBotReply({
       repo: args.repo,
       issueNumber: issue.number,
       botLogin,
@@ -307,11 +539,31 @@ async function main() {
       pollSec: args.pollSec,
     });
 
-    const timedOut = reply.comments.length === 0;
+    let timedOut = reply.comments.length === 0;
     if (!timedOut) {
       console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number}`);
     } else {
-      console.log(`  TIMEOUT on #${issue.number}`);
+      console.log(`  TIMEOUT on #${issue.number} (attempting synthetic webhook fallback)`);
+      const syntheticOk = await emitSyntheticIssueCommentWebhook({
+        repo: args.repo,
+        issueNumber: issue.number,
+        comment: issue.mentionComment,
+      });
+      if (syntheticOk) {
+        reply = await waitForBotReply({
+          repo: args.repo,
+          issueNumber: issue.number,
+          botLogin,
+          timeoutSec: Math.max(45, Math.floor(args.timeoutSec / 2)),
+          pollSec: args.pollSec,
+        });
+        timedOut = reply.comments.length === 0;
+      }
+      if (timedOut) {
+        console.log(`  Still timed out on #${issue.number}`);
+      } else {
+        console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number} after synthetic fallback`);
+      }
     }
 
     const fileChanges = getIssueFileChanges(args.repo, issue.number);
