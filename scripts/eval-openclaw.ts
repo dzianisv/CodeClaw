@@ -650,9 +650,16 @@ function isProgressOnlyBotComment(body: string): boolean {
 }
 
 function isCompletionSignal(body: string): boolean {
+  const trimmed = body.trim();
+  if (!trimmed) return false;
   if (isTerminalBotComment(body)) return true;
   if (isProgressOnlyBotComment(body)) return false;
-  return body.trim().length >= 80;
+  const completionPatterns = [
+    /\b(created|implemented|added|completed|done)\b/i,
+    /\b(gpt-1|june\s+2018)\b/i,
+    /```[\s\S]+```/m,
+  ];
+  return completionPatterns.some((pattern) => pattern.test(trimmed));
 }
 
 function parsePromptfooCounts(payload: any): { passed: number; failed: number; errors: number } {
