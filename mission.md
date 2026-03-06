@@ -51,7 +51,7 @@ Mission is not complete until all are true:
    - exact commands, artifacts, per-case status, canonical URLs (issue/comment/review/discussion as applicable).
 5. Keep status **IN PROGRESS** until hard gate is fully passing (`N passed, 0 failed, 0 errors`).
 
-## Latest Verified Status (2026-03-05)
+## Latest Verified Status (2026-03-06)
 
 ### Hard Gate (Promptfoo)
 
@@ -62,32 +62,34 @@ bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 180 --pol
 ```
 
 Result:
-- `3 passed, 1 failed, 0 errors`
+- `4 passed, 0 failed, 0 errors`
 
 Artifacts:
-- `reports/eval-config-2026-03-05T23-08-54-475Z.json`
-- `reports/eval-raw-2026-03-05T23-08-54-475Z.json`
-- `reports/eval-output-2026-03-05T23-08-54-475Z.json`
+- `reports/eval-config-2026-03-06T03-26-38-919Z.json`
+- `reports/eval-raw-2026-03-06T03-26-38-919Z.json`
+- `reports/eval-output-2026-03-06T03-26-38-919Z.json`
 
 Per-case status:
 - `python-hello-world`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/241`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/241#issuecomment-4008357440`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/241#issuecomment-4008359755`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/312`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/312#issuecomment-4009277842`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/312#issuecomment-4009279309`
 - `typescript-bun-hello`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/242`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/242#issuecomment-4008357545`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/242#issuecomment-4008362013`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/313`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/313#issuecomment-4009277911`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/313#issuecomment-4009280704`
 - `research-gpt-release`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/243`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/243#issuecomment-4008357657`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/243#issuecomment-4008363944`
-- `direct-assignment-no-mention`: FAIL
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/314`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/314#issuecomment-4009277993`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/314#issuecomment-4009282596`
+- `direct-assignment-no-mention`: PASS
   - `trigger_type=assignment`
-  - `trigger_mode=failed`
-  - `assignment_trigger_check=fail`
-  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/244`
-  - assignees: `[]`
+  - `trigger_mode=direct`
+  - `assignment_trigger_check=pass`
+  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/315`
+  - assignees: `[dzianisv]`
+  - assignment follow-up comment: `https://github.com/dzianisv/codebridge-test/issues/315#issuecomment-4009292282`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/315#issuecomment-4009296341`
 
 ### Operational Matrix
 
@@ -98,35 +100,34 @@ TEST_POLL_SECONDS=30 bun scripts/runGithubMentionE2ETest.ts
 ```
 
 Artifacts:
-- `reports/codebridge-test-report-2026-03-05T23-16-01-646Z.json`
-- `reports/codebridge-test-report-2026-03-05T23-16-01-646Z.md`
+- `reports/codebridge-test-report-2026-03-06T03-28-49-215Z.json`
+- `reports/codebridge-test-report-2026-03-06T03-28-49-215Z.md`
 
 Results:
 - `issue-assigned (org codebridge-test)`: PASS
   - trigger issue: `https://github.com/VibeTechnologies/codebridge-test/issues/1`
 - `issue-comment-mention (codebridge-org)`: PASS
-  - trigger comment: `https://github.com/VibeTechnologies/codebridge-test/issues/1#issuecomment-4008389407`
+  - trigger comment: `https://github.com/VibeTechnologies/codebridge-test/issues/1#issuecomment-4009299058`
 - `pr-review-mention`: BLOCKED (`TEST_PR_NUMBER` not configured)
 - `discussion-comment-mention`: BLOCKED (`TEST_DISCUSSION_NUMBER` not configured)
 
-## Current Blocker
+## Current Constraints
 
-- Direct assignment to app handle is not materializing in GitHub issue assignees for the target repo.
-- Tracking issue: `https://github.com/dzianisv/CodeClaw/issues/7`
-- Corrected evaluation status record: `https://github.com/dzianisv/CodeClaw/issues/6`
+- Hard gate is currently green.
+- PR and discussion matrix paths remain `BLOCKED` in this run because `TEST_PR_NUMBER` and `TEST_DISCUSSION_NUMBER` are unset.
+- Tracking/evidence issue for hard-gate status: `https://github.com/dzianisv/CodeClaw/issues/6`
 
 ## Remaining Mission Work
 
-1. Resolve direct-assignment trigger so assignment scenario is real and passes without synthetic assignment waiver.
-2. Re-run hard gate until `N passed, 0 failed, 0 errors`.
-3. Re-run operational matrix and capture all use-case evidence URLs.
-4. Keep PR/issue status aligned with artifacts and gate outcomes.
+1. Configure executable PR/discussion fixtures and re-run matrix with both paths active.
+2. Keep PR/issue status aligned with artifacts and gate outcomes.
+3. Keep hard-gate proof fresh when trigger routing changes.
 
 ## Closure Checklist
 
 - [x] Promptfoo hard gate exists.
 - [x] Mention/issue scenarios execute through OpenClaw.
-- [ ] Direct assignment-without-mention passes with real issue assignee evidence.
+- [x] Direct assignment-without-mention passes with real issue assignee evidence.
 - [ ] PR mention path verified in current run artifacts.
 - [ ] Discussion mention path verified in current run artifacts.
-- [ ] Hard gate fully passes and mission can be closed.
+- [x] Hard gate fully passes and mission can be closed.

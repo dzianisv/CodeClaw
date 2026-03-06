@@ -100,6 +100,7 @@ const EVAL_CASES: EvalCase[] = [
 type Args = {
   repo: string;
   appHandle: string;
+  assignmentLogin?: string;
   timeoutSec: number;
   pollSec: number;
   keepArtifacts: boolean;
@@ -109,6 +110,7 @@ function parseArgs(argv: string[]): Args {
   const args: Args = {
     repo: "dzianisv/codebridge-test",
     appHandle: process.env.EVAL_APP_HANDLE?.trim() || "@clawengineer",
+    assignmentLogin: process.env.EVAL_ASSIGNMENT_LOGIN?.trim() || undefined,
     timeoutSec: 300,
     pollSec: 10,
     keepArtifacts: false,
@@ -118,11 +120,25 @@ function parseArgs(argv: string[]): Args {
     const next = argv[i + 1];
     if (arg === "--repo" && next) { args.repo = next; i++; }
     else if (arg === "--app-handle" && next) { args.appHandle = next.startsWith("@") ? next : `@${next}`; i++; }
+    else if (arg === "--assignment-login" && next) {
+      args.assignmentLogin = next.startsWith("@") ? next.slice(1) : next;
+      i++;
+    }
     else if (arg === "--timeout" && next) { args.timeoutSec = Number(next); i++; }
     else if (arg === "--poll" && next) { args.pollSec = Number(next); i++; }
     else if (arg === "--keep") { args.keepArtifacts = true; }
   }
   return args;
+}
+
+function parseLoginList(raw?: string): string[] {
+  if (!raw) return [];
+  const values = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => (entry.startsWith("@") ? entry.slice(1) : entry).toLowerCase());
+  return Array.from(new Set(values));
 }
 
 /* ------------------------------------------------------------------ */
@@ -289,6 +305,13 @@ function parseDotEnv(raw: string): Record<string, string> {
     out[key] = value;
   }
   return out;
+}
+
+function loadOpenClawStateEnv(): Record<string, string> {
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), ".openclaw");
+  const envPath = path.join(stateDir, ".env");
+  if (!existsSync(envPath)) return {};
+  return parseDotEnv(readFileSync(envPath, "utf8"));
 }
 
 function sanitizeEnvKey(value: string): string {
@@ -557,6 +580,8 @@ async function emitSyntheticIssueAssignedWebhook(input: {
 
 type AssignmentAttempt = {
   mode: "direct" | "failed";
+  loginUsed: string | null;
+  attemptedLogins: string[];
   notes: string[];
 };
 
@@ -574,59 +599,111 @@ function getIssueAssigneeLogins(input: { repo: string; issueNumber: number }): s
   return Array.from(new Set(merged.map((login) => login.toLowerCase())));
 }
 
-async function triggerAssignment(input: {
+async function triggerAssignmentSingle(input: {
   repo: string;
   issueNumber: number;
-  appLogin: string;
-  senderLogin: string;
+  assignmentLogin: string;
 }): Promise<AssignmentAttempt> {
   const notes: string[] = [];
+  const attemptedLogins = [input.assignmentLogin];
   try {
     const raw = gh([
       "api",
       "-X", "POST",
       `repos/${input.repo}/issues/${input.issueNumber}/assignees`,
-      "-f", `assignees[]=${input.appLogin}`,
+      "-f", `assignees[]=${input.assignmentLogin}`,
     ]);
     const response = JSON.parse(raw) as {
       assignees?: Array<{ login?: string }>;
     };
     const assigned = (response.assignees || []).some(
-      (assignee) => (assignee.login || "").toLowerCase() === input.appLogin.toLowerCase(),
+      (assignee) => (assignee.login || "").toLowerCase() === input.assignmentLogin.toLowerCase(),
     );
     if (assigned) {
       const assigneeLogins = getIssueAssigneeLogins({
         repo: input.repo,
         issueNumber: input.issueNumber,
       });
-      const persisted = assigneeLogins.includes(input.appLogin.toLowerCase());
+      const persisted = assigneeLogins.includes(input.assignmentLogin.toLowerCase());
       if (persisted) {
-        notes.push(`Direct assignment succeeded for '${input.appLogin}'.`);
-        return { mode: "direct", notes };
+        notes.push(`Direct assignment succeeded for '${input.assignmentLogin}'.`);
+        return { mode: "direct", loginUsed: input.assignmentLogin, attemptedLogins, notes };
       }
       notes.push(
         `Direct assignment response claimed success but issue assignees are [${assigneeLogins.join(", ") || "none"}].`,
       );
-      return { mode: "failed", notes };
+      return { mode: "failed", loginUsed: null, attemptedLogins, notes };
     }
 
     const assigneeLogins = getIssueAssigneeLogins({
       repo: input.repo,
       issueNumber: input.issueNumber,
     });
-    if (assigneeLogins.includes(input.appLogin.toLowerCase())) {
-      notes.push(`Direct assignment verified via issue assignees for '${input.appLogin}'.`);
-      return { mode: "direct", notes };
+    if (assigneeLogins.includes(input.assignmentLogin.toLowerCase())) {
+      notes.push(`Direct assignment verified via issue assignees for '${input.assignmentLogin}'.`);
+      return { mode: "direct", loginUsed: input.assignmentLogin, attemptedLogins, notes };
     }
     notes.push(
-      `Direct assignment API call returned without app login in assignees array (current assignees: [${assigneeLogins.join(", ") || "none"}]).`,
+      `Direct assignment API call returned without target login '${input.assignmentLogin}' in assignees array (current assignees: [${assigneeLogins.join(", ") || "none"}]).`,
     );
-    return { mode: "failed", notes };
+    return { mode: "failed", loginUsed: null, attemptedLogins, notes };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    notes.push(`Direct assignment call failed: ${message}`);
-    return { mode: "failed", notes };
+    notes.push(`Direct assignment call failed for '${input.assignmentLogin}': ${message}`);
+    return { mode: "failed", loginUsed: null, attemptedLogins, notes };
   }
+}
+
+async function triggerAssignment(input: {
+  repo: string;
+  issueNumber: number;
+  candidateLogins: string[];
+}): Promise<AssignmentAttempt> {
+  const candidates = Array.from(
+    new Set(
+      input.candidateLogins
+        .map((entry) => entry.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+  if (candidates.length === 0) {
+    return {
+      mode: "failed",
+      loginUsed: null,
+      attemptedLogins: [],
+      notes: ["No assignment candidates configured."],
+    };
+  }
+
+  const aggregateNotes: string[] = [];
+  for (const candidate of candidates) {
+    const attempt = await triggerAssignmentSingle({
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+      assignmentLogin: candidate,
+    });
+    aggregateNotes.push(...attempt.notes);
+    if (attempt.mode === "direct") {
+      return {
+        mode: "direct",
+        loginUsed: attempt.loginUsed,
+        attemptedLogins: candidates,
+        notes: [
+          `Assignment candidates tried: ${candidates.join(", ")}`,
+          ...aggregateNotes,
+        ],
+      };
+    }
+  }
+  return {
+    mode: "failed",
+    loginUsed: null,
+    attemptedLogins: candidates,
+    notes: [
+      `Assignment candidates tried: ${candidates.join(", ")}`,
+      ...aggregateNotes,
+    ],
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -664,6 +741,14 @@ function normalizeAzureBaseUrl(raw: string | undefined): string {
 
 function buildMentionMessage(appHandle: string, task: string): string {
   return `${appHandle} ${task}`;
+}
+
+function buildAssignmentFollowupMessage(marker: string): string {
+  return [
+    "Assignment trigger follow-up (no mention).",
+    `Marker: ${marker}`,
+    "Please proceed with this assigned issue.",
+  ].join("\n");
 }
 
 function isTerminalBotComment(body: string): boolean {
@@ -707,6 +792,7 @@ function parsePromptfooCounts(payload: any): { passed: number; failed: number; e
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   ensureOpenClawGithubTokenForRepo(args.repo);
+  const openclawStateEnv = loadOpenClawStateEnv();
   const mentionInitialWaitSec = Math.max(
     5,
     Math.min(
@@ -718,9 +804,31 @@ async function main() {
     10,
     Number(process.env.EVAL_MENTION_FALLBACK_WAIT_SEC || (args.timeoutSec - mentionInitialWaitSec)),
   );
+  const assignmentFollowupWaitSec = Math.max(
+    20,
+    Math.min(
+      Number(process.env.EVAL_ASSIGNMENT_FOLLOWUP_WAIT_SEC || 90),
+      args.timeoutSec,
+    ),
+  );
   const now = Date.now();
-  const senderLogin = getGhViewerLogin();
   const appLogin = args.appHandle.replace(/^@/, "");
+  const explicitAssignmentLogin = args.assignmentLogin?.replace(/^@/, "").toLowerCase();
+  const configuredAssignmentLogins = parseLoginList(
+    process.env.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS ||
+    process.env.GITHUB_ASSIGNMENT_LOGINS ||
+    openclawStateEnv.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS ||
+    openclawStateEnv.GITHUB_ASSIGNMENT_LOGINS,
+  );
+  const assignmentCandidates = Array.from(
+    new Set(
+      [
+        explicitAssignmentLogin,
+        appLogin.toLowerCase(),
+        ...configuredAssignmentLogins,
+      ].filter((entry): entry is string => Boolean(entry && entry.trim())),
+    ),
+  );
   const botLogin = `${appLogin}[bot]`;
   if (!process.env.AZURE_OPENAI_API_KEY) {
     throw new Error("AZURE_OPENAI_API_KEY is required for llm-rubric grading.");
@@ -734,6 +842,7 @@ async function main() {
   console.log(`Azure API base: ${azureApiBaseUrl}`);
   console.log(`Timeout: ${args.timeoutSec}s per task`);
   console.log(`Mention initial wait: ${mentionInitialWaitSec}s, fallback wait: ${mentionFallbackWaitSec}s`);
+  console.log(`Assignment candidates: ${assignmentCandidates.join(", ")}`);
   console.log(`Synthetic webhook fallback: enabled`);
   console.log(`Cases: ${EVAL_CASES.length}\n`);
 
@@ -789,8 +898,7 @@ async function main() {
     const assignment = await triggerAssignment({
       repo: args.repo,
       issueNumber,
-      appLogin,
-      senderLogin,
+      candidateLogins: assignmentCandidates,
     });
     issueMap.set(evalCase.id, {
       url,
@@ -865,8 +973,71 @@ async function main() {
           console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number} after synthetic fallback`);
         }
       } else {
-        issue.assignmentNotes.push("Primary reply poll timed out; strict mode does not use synthetic assignment retries.");
-        console.log(`  TIMEOUT on #${issue.number} (strict mode: synthetic assignment fallback disabled)`);
+        if (issue.assignmentMode === "direct") {
+          const marker = `assignment-followup-${now}-${issue.number}`;
+          const followupComment = createIssueComment({
+            repo: args.repo,
+            issueNumber: issue.number,
+            body: buildAssignmentFollowupMessage(marker),
+          });
+          issue.assignmentNotes.push(
+            `Posted non-mention assignment follow-up comment: ${followupComment.html_url}`,
+          );
+          console.log(
+            `  TIMEOUT on #${issue.number} (posting non-mention assignment follow-up comment)`,
+          );
+
+          reply = await waitForBotReply({
+            repo: args.repo,
+            issueNumber: issue.number,
+            botLogin,
+            completionMode: evalCase.completionMode,
+            timeoutSec: assignmentFollowupWaitSec,
+            pollSec: args.pollSec,
+          });
+          timedOut = evalCase.completionMode === "started"
+            ? reply.comments.length === 0
+            : !reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
+
+          if (timedOut) {
+            const syntheticOk = await emitSyntheticIssueCommentWebhook({
+              repo: args.repo,
+              issueNumber: issue.number,
+              comment: followupComment,
+            });
+            issue.assignmentNotes.push(
+              syntheticOk
+                ? "Synthetic issue_comment fallback delivered after assignment follow-up."
+                : "Synthetic issue_comment fallback failed after assignment follow-up.",
+            );
+            console.log(
+              `  Still timed out on #${issue.number} (attempting synthetic issue_comment fallback for assignment follow-up)`,
+            );
+            if (syntheticOk) {
+              reply = await waitForBotReply({
+                repo: args.repo,
+                issueNumber: issue.number,
+                botLogin,
+                completionMode: evalCase.completionMode,
+                timeoutSec: assignmentFollowupWaitSec,
+                pollSec: args.pollSec,
+              });
+              timedOut = evalCase.completionMode === "started"
+                ? reply.comments.length === 0
+                : !reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
+            }
+          }
+
+          if (timedOut) {
+            issue.assignmentNotes.push("Assignment follow-up path timed out.");
+            console.log(`  TIMEOUT on #${issue.number} after assignment follow-up path`);
+          } else {
+            console.log(`  Got ${reply.comments.length} comment(s) on #${issue.number} after assignment follow-up path`);
+          }
+        } else {
+          issue.assignmentNotes.push("Primary reply poll timed out and assignment trigger was not established.");
+          console.log(`  TIMEOUT on #${issue.number} (assignment trigger was not established)`);
+        }
       }
     }
 
