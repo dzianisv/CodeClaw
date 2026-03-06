@@ -11,4 +11,9 @@
   - Exact command used.
   - Report artifact path(s).
   - Pass/fail summary with per-case status.
+  - Canonical GitHub URLs for every evaluated trigger/artifact:
+    - Issue URL for issue-based scenarios.
+    - PR URL for PR review scenarios.
+    - Discussion URL for discussion scenarios.
+    - Comment/review URL when the trigger is a comment/review event.
 - Do not mark complete on “script ran successfully” if eval assertions failed.

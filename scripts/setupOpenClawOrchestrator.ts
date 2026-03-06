@@ -61,6 +61,7 @@ type GitHubRefreshResult = {
 
 type GitHubAppIdentity = {
   appLogin: string;
+  selfLogins: string[];
   assigneeLogins: string[];
   mentionHandles: string[];
 };
@@ -247,6 +248,12 @@ async function main() {
   runtimeEnvVars.GITHUB_APP_LOGIN = githubAppIdentity.appLogin;
   runtimeEnvVars.OPENCLAW_GITHUB_APP_LOGIN = githubAppIdentity.appLogin;
   runtimeEnvVars.GITHUB_APP_SLUG = githubAppIdentity.appLogin;
+  const assignmentAliases = githubAppIdentity.assigneeLogins.filter(
+    (entry) => !githubAppIdentity.selfLogins.includes(entry),
+  );
+  if (assignmentAliases.length > 0) {
+    runtimeEnvVars.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS = assignmentAliases.join(",");
+  }
 
   log("Ensuring OpenClaw CLI can read current config");
   const versionProbe = runCommand(["openclaw", "--version"], { allowFailure: true, dryRun: opts.dryRun });
@@ -433,6 +440,14 @@ async function resolveGitHubAppIdentity(input: {
   env: Record<string, string | undefined>;
   dryRun: boolean;
 }): Promise<GitHubAppIdentity> {
+  const configuredAssignmentLogins = parseLoginList(
+    optsFromEnv(
+      process.env.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS,
+      process.env.GITHUB_ASSIGNMENT_LOGINS,
+      input.env.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS,
+      input.env.GITHUB_ASSIGNMENT_LOGINS,
+    ),
+  );
   const explicitLogin = normalizeGitHubAppLogin(
     optsFromEnv(
       process.env.OPENCLAW_GITHUB_APP_LOGIN,
@@ -442,12 +457,12 @@ async function resolveGitHubAppIdentity(input: {
     ),
   );
   if (explicitLogin) {
-    return buildGitHubAppIdentity(explicitLogin);
+    return buildGitHubAppIdentity(explicitLogin, configuredAssignmentLogins);
   }
 
   if (!input.githubApp) {
     if (input.dryRun) {
-      return buildGitHubAppIdentity("githubapp");
+      return buildGitHubAppIdentity("githubapp", configuredAssignmentLogins);
     }
     throw new Error(
       "GitHub App login is not configured. Set GITHUB_APP_LOGIN (or OPENCLAW_GITHUB_APP_LOGIN), or provide GitHub App credentials so login can be resolved automatically.",
@@ -455,7 +470,7 @@ async function resolveGitHubAppIdentity(input: {
   }
 
   if (input.dryRun) {
-    return buildGitHubAppIdentity("githubapp");
+    return buildGitHubAppIdentity("githubapp", configuredAssignmentLogins);
   }
 
   const appJwt = createGitHubAppJwt(input.githubApp.appId, input.githubApp.appPrivateKeyPem);
@@ -464,7 +479,7 @@ async function resolveGitHubAppIdentity(input: {
   if (!resolvedLogin) {
     throw new Error("Failed to resolve GitHub App login from GitHub API /app response.");
   }
-  return buildGitHubAppIdentity(resolvedLogin);
+  return buildGitHubAppIdentity(resolvedLogin, configuredAssignmentLogins);
 }
 
 async function getGitHubAppDetails(appJwt: string): Promise<{ slug: string }> {
@@ -488,19 +503,32 @@ async function getGitHubAppDetails(appJwt: string): Promise<{ slug: string }> {
   return { slug: payload.slug.trim() };
 }
 
-function buildGitHubAppIdentity(login: string): GitHubAppIdentity {
+function buildGitHubAppIdentity(login: string, assignmentAliases: string[] = []): GitHubAppIdentity {
   const normalized = normalizeGitHubAppLogin(login);
   if (!normalized) {
     throw new Error("GitHub App login cannot be empty.");
   }
   const base = normalized.endsWith("[bot]") ? normalized.slice(0, -5) : normalized;
-  const assigneeLogins = uniqueLower([base, `${base}[bot]`]);
-  const mentionHandles = assigneeLogins.map((entry) => `@${entry}`);
+  const selfLogins = uniqueLower([base, `${base}[bot]`]);
+  const assigneeLogins = uniqueLower([...selfLogins, ...assignmentAliases]);
+  const mentionHandles = selfLogins.map((entry) => `@${entry}`);
   return {
     appLogin: base,
+    selfLogins,
     assigneeLogins,
     mentionHandles,
   };
+}
+
+function parseLoginList(raw?: string): string[] {
+  if (!raw) return [];
+  return uniqueLower(
+    raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => (entry.startsWith("@") ? entry.slice(1) : entry)),
+  );
 }
 
 function normalizeGitHubAppLogin(raw?: string): string | undefined {
@@ -648,11 +676,12 @@ function buildGithubHookMapping(): Record<string, unknown> {
 function renderGitHubMentionsTransformModule(identity: GitHubAppIdentity): string {
   const serializedHandles = JSON.stringify(identity.mentionHandles);
   const assigneeLoginsLiteral = JSON.stringify(identity.assigneeLogins);
+  const selfLoginsLiteral = JSON.stringify(identity.selfLogins);
   return `import { createHmac, timingSafeEqual } from "node:crypto";
 
 const MENTION_HANDLES = ${serializedHandles};
 const ASSIGNEE_LOGINS = new Set(${assigneeLoginsLiteral});
-const SELF_LOGINS = new Set(${assigneeLoginsLiteral});
+const SELF_LOGINS = new Set(${selfLoginsLiteral});
 
 function safeString(value) {
   return typeof value === "string" ? value.trim() : "";
