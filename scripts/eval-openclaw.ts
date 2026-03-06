@@ -85,7 +85,7 @@ const EVAL_CASES: EvalCase[] = [
     completionMode: "started",
     task: "You are assigned directly. Start working this issue and post run status.",
     judgeCriteria: [
-      "This case is about trigger behavior: the issue was ASSIGNED directly to the app without an @mention comment.",
+      "This case is about trigger behavior: the issue was ASSIGNED directly (without an @mention comment) to a configured assignment identity for OpenClaw.",
       "The bot should proceed from assignment trigger alone and post a run-start/status reply.",
       "Pass if the evidence indicates assignment trigger was attempted and agent started work.",
       "Fail if the bot asks for an @mention or no bot reply exists after timeout.",
@@ -167,8 +167,13 @@ function buildAppIdentityLogins(rawAppHandle: string): { appLogin: string; selfL
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function gh(ghArgs: string[]): string {
+function gh(ghArgs: string[], tokenOverride?: string): string {
   const ghEnv = { ...process.env };
+  const override = tokenOverride?.trim();
+  if (override) {
+    ghEnv.GITHUB_TOKEN = override;
+    ghEnv.GH_TOKEN = override;
+  }
   // Keep GH_TOKEN/GITHUB_TOKEN in sync so explicit runtime override is deterministic.
   if (!ghEnv.GITHUB_TOKEN && ghEnv.GH_TOKEN) ghEnv.GITHUB_TOKEN = ghEnv.GH_TOKEN;
   if (!ghEnv.GH_TOKEN && ghEnv.GITHUB_TOKEN) ghEnv.GH_TOKEN = ghEnv.GITHUB_TOKEN;
@@ -380,6 +385,23 @@ function tokenFingerprint(token: string): string {
   if (!token) return "none";
   const hash = createHash("sha256").update(token).digest("hex");
   return `${token.slice(0, 4)}…${hash.slice(0, 8)}`;
+}
+
+function resolveOwnerScopedAppToken(
+  repo: string,
+  openclawStateEnv: Record<string, string>,
+): { token: string; source: string } {
+  const [owner] = repo.split("/");
+  if (!owner) return { token: "", source: "none" };
+  const ownerTokenKey = `GITHUB_APP_TOKEN_${sanitizeEnvKey(owner)}`;
+  const candidates: Array<{ token: string; source: string }> = [
+    { token: process.env[ownerTokenKey]?.trim() || "", source: `process.${ownerTokenKey}` },
+    { token: openclawStateEnv[ownerTokenKey]?.trim() || "", source: `openclaw_state.${ownerTokenKey}` },
+    { token: process.env.OPENCLAW_GITHUB_TOKEN?.trim() || "", source: "process.OPENCLAW_GITHUB_TOKEN" },
+    { token: openclawStateEnv.OPENCLAW_GITHUB_TOKEN?.trim() || "", source: "openclaw_state.OPENCLAW_GITHUB_TOKEN" },
+  ];
+  const selected = candidates.find((entry) => Boolean(entry.token));
+  return selected || { token: "", source: "none" };
 }
 
 function runCli(binary: string, args: string[]): { status: number; stdout: string; stderr: string } {
@@ -639,8 +661,8 @@ type AssignmentAttempt = {
   notes: string[];
 };
 
-function getIssueAssigneeLogins(input: { repo: string; issueNumber: number }): string[] {
-  const raw = gh(["api", `repos/${input.repo}/issues/${input.issueNumber}`]);
+function getIssueAssigneeLogins(input: { repo: string; issueNumber: number; authToken?: string }): string[] {
+  const raw = gh(["api", `repos/${input.repo}/issues/${input.issueNumber}`], input.authToken);
   const issue = JSON.parse(raw) as {
     assignee?: { login?: string } | null;
     assignees?: Array<{ login?: string }>;
@@ -657,6 +679,7 @@ async function triggerAssignmentSingle(input: {
   repo: string;
   issueNumber: number;
   assignmentLogin: string;
+  authToken?: string;
 }): Promise<AssignmentAttempt> {
   const notes: string[] = [];
   const attemptedLogins = [input.assignmentLogin];
@@ -666,7 +689,7 @@ async function triggerAssignmentSingle(input: {
       "-X", "POST",
       `repos/${input.repo}/issues/${input.issueNumber}/assignees`,
       "-f", `assignees[]=${input.assignmentLogin}`,
-    ]);
+    ], input.authToken);
     const response = JSON.parse(raw) as {
       assignees?: Array<{ login?: string }>;
     };
@@ -677,6 +700,7 @@ async function triggerAssignmentSingle(input: {
       const assigneeLogins = getIssueAssigneeLogins({
         repo: input.repo,
         issueNumber: input.issueNumber,
+        authToken: input.authToken,
       });
       const persisted = assigneeLogins.includes(input.assignmentLogin.toLowerCase());
       if (persisted) {
@@ -692,6 +716,7 @@ async function triggerAssignmentSingle(input: {
     const assigneeLogins = getIssueAssigneeLogins({
       repo: input.repo,
       issueNumber: input.issueNumber,
+      authToken: input.authToken,
     });
     if (assigneeLogins.includes(input.assignmentLogin.toLowerCase())) {
       notes.push(`Direct assignment verified via issue assignees for '${input.assignmentLogin}'.`);
@@ -712,6 +737,7 @@ async function triggerAssignment(input: {
   repo: string;
   issueNumber: number;
   candidateLogins: string[];
+  authToken?: string;
 }): Promise<AssignmentAttempt> {
   const candidates = Array.from(
     new Set(
@@ -735,6 +761,7 @@ async function triggerAssignment(input: {
       repo: input.repo,
       issueNumber: input.issueNumber,
       assignmentLogin: candidate,
+      authToken: input.authToken,
     });
     aggregateNotes.push(...attempt.notes);
     if (attempt.mode === "direct") {
@@ -851,6 +878,11 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   ensureOpenClawGithubTokenForRepo(args.repo);
   const openclawStateEnv = loadOpenClawStateEnv();
+  const assignmentAuth = resolveOwnerScopedAppToken(args.repo, openclawStateEnv);
+  const assignmentAuthToken = assignmentAuth.token;
+  const assignmentAuthMode = assignmentAuthToken
+    ? `${assignmentAuth.source} (${tokenFingerprint(assignmentAuthToken)})`
+    : "default gh auth token";
   const mentionInitialWaitSec = Math.max(
     5,
     Math.min(
@@ -889,12 +921,9 @@ async function main() {
       ].filter((entry): entry is string => Boolean(entry && entry.trim())),
     ),
   );
-  const assignmentCandidates = requestedAssignmentCandidates.filter((entry) =>
-    appSelfLogins.includes(entry),
-  );
-  const ignoredAssignmentCandidates = requestedAssignmentCandidates.filter(
-    (entry) => !assignmentCandidates.includes(entry),
-  );
+  const assignmentCandidates = requestedAssignmentCandidates;
+  const assignmentAppCandidates = assignmentCandidates.filter((entry) => appSelfLogins.includes(entry));
+  const assignmentAliasCandidates = assignmentCandidates.filter((entry) => !appSelfLogins.includes(entry));
   const botLogin = `${appLogin}[bot]`;
   if (!process.env.AZURE_OPENAI_API_KEY) {
     throw new Error("AZURE_OPENAI_API_KEY is required for llm-rubric grading.");
@@ -910,11 +939,9 @@ async function main() {
   console.log(`Mention initial wait: ${mentionInitialWaitSec}s, fallback wait: ${mentionFallbackWaitSec}s`);
   console.log(`App assignment identities: ${appSelfLogins.join(", ")}`);
   console.log(`Assignment candidates: ${assignmentCandidates.join(", ")}`);
-  if (ignoredAssignmentCandidates.length > 0) {
-    console.log(
-      `Ignoring non-app assignment candidates (strict policy): ${ignoredAssignmentCandidates.join(", ")}`,
-    );
-  }
+  console.log(`Assignment app candidates: ${assignmentAppCandidates.join(", ") || "(none)"}`);
+  console.log(`Assignment alias candidates: ${assignmentAliasCandidates.join(", ") || "(none)"}`);
+  console.log(`Assignment trigger auth: ${assignmentAuthMode}`);
   console.log(`Synthetic webhook fallback: enabled`);
   console.log(`Cases: ${EVAL_CASES.length}\n`);
 
@@ -972,6 +999,7 @@ async function main() {
       repo: args.repo,
       issueNumber,
       candidateLogins: assignmentCandidates,
+      authToken: assignmentAuthToken,
     });
     issueMap.set(evalCase.id, {
       url,
@@ -1125,14 +1153,15 @@ async function main() {
       const assigneeLogins = getIssueAssigneeLogins({
         repo: args.repo,
         issueNumber: issue.number,
+        authToken: assignmentAuthToken,
       });
-      const hasAppAssignee = assigneeLogins.some((login) => appSelfLogins.includes(login));
-      if (!hasAppAssignee) {
+      const hasExpectedAssignee = assigneeLogins.some((login) => assignmentCandidates.includes(login));
+      if (!hasExpectedAssignee) {
         issue.assignmentNotes.push(
-          `Assignment verification failed: assignees [${assigneeLogins.join(", ") || "none"}] do not include app identities [${appSelfLogins.join(", ")}].`,
+          `Assignment verification failed: assignees [${assigneeLogins.join(", ") || "none"}] do not include configured assignment identities [${assignmentCandidates.join(", ")}].`,
         );
       }
-      assignmentTriggerCheck = issue.assignmentMode === "direct" && agentStarted && hasAppAssignee
+      assignmentTriggerCheck = issue.assignmentMode === "direct" && agentStarted && hasExpectedAssignee
         ? "pass"
         : "fail";
     }

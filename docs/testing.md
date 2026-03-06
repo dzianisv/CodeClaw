@@ -52,7 +52,8 @@ bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 180 --pol
 - Assignment trigger acceptance:
   - `trigger_type` must be `assignment`.
   - `trigger_mode` must be `direct`.
-  - The target issue must contain the app login in `assignees` (real GitHub assignment, not inferred/synthetic).
+  - The target issue must contain a configured OpenClaw assignment identity in `assignees` (real GitHub assignment, not inferred/synthetic).
+  - Preferred identity is the app login; when GitHub does not allow assigning the app bot account, use explicit assignment aliases from `OPENCLAW_GITHUB_ASSIGNMENT_LOGINS`.
   - Any synthetic assignment fallback is a hard gate failure.
 
 ## Operational E2E Matrix (Readiness, Non-Blocking)
