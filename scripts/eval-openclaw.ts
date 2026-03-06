@@ -12,7 +12,7 @@
  * Requires:
  *   - OpenClaw gateway running (hooks enabled)
  *   - Webhook bridge running (start-clawengineer-webhook-bridge.ts)
- *   - gh CLI authenticated (keyring, not GITHUB_TOKEN env)
+ *   - gh CLI authenticated (runtime GH_TOKEN/GITHUB_TOKEN override is supported)
  */
 
 import { spawnSync } from "node:child_process";
@@ -57,7 +57,8 @@ const EVAL_CASES: EvalCase[] = [
     completionMode: "terminal",
     task: "Create a file called hello.ts that uses console.log to print 'Hello from Bun!'. Only create the file, nothing else.",
     judgeCriteria: [
-      "The bot MUST have created or shown a TypeScript file (hello.ts) that prints 'Hello from Bun!' via console.log.",
+      "Accept as correct if the bot clearly states it created `hello.ts` and that it prints 'Hello from Bun!' via console.log.",
+      "Also accept when the bot shows the file contents directly (for example `console.log('Hello from Bun!')`).",
       "The file should be valid TypeScript that runs under Bun.",
       "If the response contains error messages about network failures, gh CLI, or GitHub API — that is a FAILURE even if partial output is present.",
       "Score 0-10: 10 = file created correctly with clean output, 5 = correct logic but noisy output, 0 = wrong or no useful output.",
@@ -141,6 +142,25 @@ function parseLoginList(raw?: string): string[] {
   return Array.from(new Set(values));
 }
 
+function normalizeLogin(raw?: string): string {
+  const trimmed = raw?.trim().toLowerCase() || "";
+  if (!trimmed) return "";
+  return trimmed.startsWith("@") ? trimmed.slice(1) : trimmed;
+}
+
+function buildAppIdentityLogins(rawAppHandle: string): { appLogin: string; selfLogins: string[] } {
+  const normalized = normalizeLogin(rawAppHandle);
+  if (!normalized) {
+    throw new Error("App handle/login is empty after normalization.");
+  }
+  const base = normalized.endsWith("[bot]") ? normalized.slice(0, -5) : normalized;
+  if (!base) {
+    throw new Error(`Invalid app handle/login: ${rawAppHandle}`);
+  }
+  const selfLogins = Array.from(new Set([base, `${base}[bot]`]));
+  return { appLogin: base, selfLogins };
+}
+
 /* ------------------------------------------------------------------ */
 /*  GitHub helpers (via gh CLI, keyring auth)                           */
 /* ------------------------------------------------------------------ */
@@ -148,9 +168,13 @@ function parseLoginList(raw?: string): string[] {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function gh(ghArgs: string[]): string {
+  const ghEnv = { ...process.env };
+  // Keep GH_TOKEN/GITHUB_TOKEN in sync so explicit runtime override is deterministic.
+  if (!ghEnv.GITHUB_TOKEN && ghEnv.GH_TOKEN) ghEnv.GITHUB_TOKEN = ghEnv.GH_TOKEN;
+  if (!ghEnv.GH_TOKEN && ghEnv.GITHUB_TOKEN) ghEnv.GH_TOKEN = ghEnv.GITHUB_TOKEN;
   const result = spawnSync("gh", ghArgs, {
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" },
+    env: ghEnv,
     encoding: "utf-8",
   });
   if (result.error) {
@@ -263,18 +287,48 @@ function createIssue(input: { repo: string; title: string; body: string }): { ur
   return { url, number };
 }
 
-function createIssueComment(input: { repo: string; issueNumber: number; body: string }): IssueComment {
-  const raw = gh([
-    "api",
-    "-X", "POST",
-    `repos/${input.repo}/issues/${input.issueNumber}/comments`,
-    "-f", `body=${input.body}`,
-  ]);
-  const comment = JSON.parse(raw) as IssueComment;
-  if (!comment?.id || !comment?.html_url) {
-    throw new Error(`Failed to create issue comment in ${input.repo}#${input.issueNumber}. Raw response: ${raw}`);
+function isRetryableCommentCreateError(message: string): boolean {
+  return /\(HTTP (422|429|500|502|503|504)\)/i.test(message) ||
+    /validation failed/i.test(message) ||
+    /secondary rate limit/i.test(message);
+}
+
+async function createIssueComment(input: { repo: string; issueNumber: number; body: string }): Promise<IssueComment> {
+  const maxAttempts = 3;
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const body = attempt === 1
+      ? input.body
+      : `${input.body}\n\nRetry marker: comment-retry-${Date.now()}-a${attempt}`;
+    try {
+      const raw = gh([
+        "api",
+        "-X", "POST",
+        `repos/${input.repo}/issues/${input.issueNumber}/comments`,
+        "--raw-field", `body=${body}`,
+      ]);
+      const comment = JSON.parse(raw) as IssueComment;
+      if (!comment?.id || !comment?.html_url) {
+        throw new Error(
+          `Failed to create issue comment in ${input.repo}#${input.issueNumber}. Raw response: ${raw}`,
+        );
+      }
+      return comment;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      lastError = error instanceof Error ? error : new Error(message);
+      if (attempt >= maxAttempts || !isRetryableCommentCreateError(message)) {
+        throw lastError;
+      }
+      console.log(
+        `    comment create retry ${attempt}/${maxAttempts - 1} for #${input.issueNumber}: ${message.split("\n")[0]}`,
+      );
+      await sleep(1500 * attempt);
+    }
   }
-  return comment;
+
+  throw lastError ?? new Error(`Failed to create issue comment in ${input.repo}#${input.issueNumber}.`);
 }
 
 function getGhViewerLogin(): string {
@@ -739,8 +793,12 @@ function normalizeAzureBaseUrl(raw: string | undefined): string {
   }
 }
 
-function buildMentionMessage(appHandle: string, task: string): string {
-  return `${appHandle} ${task}`;
+function buildMentionMessage(appHandle: string, task: string, marker: string): string {
+  return [
+    `${appHandle} ${task}`,
+    "",
+    `Eval marker: ${marker}`,
+  ].join("\n");
 }
 
 function buildAssignmentFollowupMessage(marker: string): string {
@@ -812,7 +870,9 @@ async function main() {
     ),
   );
   const now = Date.now();
-  const appLogin = args.appHandle.replace(/^@/, "");
+  const appIdentity = buildAppIdentityLogins(args.appHandle);
+  const appLogin = appIdentity.appLogin;
+  const appSelfLogins = appIdentity.selfLogins;
   const explicitAssignmentLogin = args.assignmentLogin?.replace(/^@/, "").toLowerCase();
   const configuredAssignmentLogins = parseLoginList(
     process.env.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS ||
@@ -820,14 +880,20 @@ async function main() {
     openclawStateEnv.OPENCLAW_GITHUB_ASSIGNMENT_LOGINS ||
     openclawStateEnv.GITHUB_ASSIGNMENT_LOGINS,
   );
-  const assignmentCandidates = Array.from(
+  const requestedAssignmentCandidates = Array.from(
     new Set(
       [
         explicitAssignmentLogin,
-        appLogin.toLowerCase(),
+        ...appSelfLogins,
         ...configuredAssignmentLogins,
       ].filter((entry): entry is string => Boolean(entry && entry.trim())),
     ),
+  );
+  const assignmentCandidates = requestedAssignmentCandidates.filter((entry) =>
+    appSelfLogins.includes(entry),
+  );
+  const ignoredAssignmentCandidates = requestedAssignmentCandidates.filter(
+    (entry) => !assignmentCandidates.includes(entry),
   );
   const botLogin = `${appLogin}[bot]`;
   if (!process.env.AZURE_OPENAI_API_KEY) {
@@ -842,7 +908,13 @@ async function main() {
   console.log(`Azure API base: ${azureApiBaseUrl}`);
   console.log(`Timeout: ${args.timeoutSec}s per task`);
   console.log(`Mention initial wait: ${mentionInitialWaitSec}s, fallback wait: ${mentionFallbackWaitSec}s`);
+  console.log(`App assignment identities: ${appSelfLogins.join(", ")}`);
   console.log(`Assignment candidates: ${assignmentCandidates.join(", ")}`);
+  if (ignoredAssignmentCandidates.length > 0) {
+    console.log(
+      `Ignoring non-app assignment candidates (strict policy): ${ignoredAssignmentCandidates.join(", ")}`,
+    );
+  }
   console.log(`Synthetic webhook fallback: enabled`);
   console.log(`Cases: ${EVAL_CASES.length}\n`);
 
@@ -877,10 +949,11 @@ async function main() {
     console.log(`  Created ${evalCase.id} → ${url}`);
 
     if (evalCase.trigger === "mention") {
-      const mentionComment = createIssueComment({
+      const mentionMarker = `mention-${now}-${issueNumber}-${evalCase.id}`;
+      const mentionComment = await createIssueComment({
         repo: args.repo,
         issueNumber,
-        body: buildMentionMessage(args.appHandle, evalCase.task),
+        body: buildMentionMessage(args.appHandle, evalCase.task, mentionMarker),
       });
       issueMap.set(evalCase.id, {
         url,
@@ -975,7 +1048,7 @@ async function main() {
       } else {
         if (issue.assignmentMode === "direct") {
           const marker = `assignment-followup-${now}-${issue.number}`;
-          const followupComment = createIssueComment({
+          const followupComment = await createIssueComment({
             repo: args.repo,
             issueNumber: issue.number,
             body: buildAssignmentFollowupMessage(marker),
@@ -1047,10 +1120,22 @@ async function main() {
     }
     const agentStarted = reply.comments.length > 0;
     const agentCompleted = reply.comments.some((comment) => isCompletionSignal(comment.body ?? ""));
-    const assignmentTriggerCheck: EvalResult["assignmentTriggerCheck"] =
-      evalCase.trigger === "assignment"
-        ? (issue.assignmentMode === "direct" && agentStarted ? "pass" : "fail")
-        : "n/a";
+    let assignmentTriggerCheck: EvalResult["assignmentTriggerCheck"] = "n/a";
+    if (evalCase.trigger === "assignment") {
+      const assigneeLogins = getIssueAssigneeLogins({
+        repo: args.repo,
+        issueNumber: issue.number,
+      });
+      const hasAppAssignee = assigneeLogins.some((login) => appSelfLogins.includes(login));
+      if (!hasAppAssignee) {
+        issue.assignmentNotes.push(
+          `Assignment verification failed: assignees [${assigneeLogins.join(", ") || "none"}] do not include app identities [${appSelfLogins.join(", ")}].`,
+        );
+      }
+      assignmentTriggerCheck = issue.assignmentMode === "direct" && agentStarted && hasAppAssignee
+        ? "pass"
+        : "fail";
+    }
 
     results.push({
       caseId: evalCase.id,
@@ -1201,10 +1286,21 @@ async function main() {
     ? ["eval", "-c", configJsonPath, "-o", outputPath, "--no-cache"]
     : ["promptfoo@latest", "eval", "-c", configJsonPath, "-o", outputPath, "--no-cache"];
   console.log(`  Running: ${promptfooCmd} ${promptfooArgs.join(" ")}\n`);
+  const promptfooConfigDir = path.join(reportsDir, ".promptfoo-runtime");
+  mkdirSync(promptfooConfigDir, { recursive: true });
+  const promptfooCachePath = path.join(promptfooConfigDir, "cache");
+  mkdirSync(promptfooCachePath, { recursive: true });
 
   const promptfooResult = spawnSync(promptfooCmd, promptfooArgs, {
     stdio: "inherit",
-    env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" },
+    env: {
+      ...process.env,
+      GITHUB_TOKEN: "",
+      GH_TOKEN: "",
+      PROMPTFOO_CONFIG_DIR: promptfooConfigDir,
+      PROMPTFOO_CACHE_PATH: promptfooCachePath,
+      PROMPTFOO_DISABLE_WAL_MODE: "true",
+    },
     cwd: process.cwd(),
     encoding: "utf-8",
   });

@@ -55,99 +55,71 @@ Mission is not complete until all are true:
 
 ### Hard Gate (Promptfoo)
 
-Command:
+Commands:
 
 ```bash
-GITHUB_TOKEN="$(gh auth token --user dzianisv)" GH_TOKEN="$GITHUB_TOKEN" \
+set -a; source ~/.env.d/github.env >/dev/null 2>&1; set +a
+bun build --target=bun ./scripts/eval-openclaw.ts --outfile /tmp/eval-openclaw.js
+GITHUB_TOKEN="$GITHUB_TOKEN" GH_TOKEN="$GITHUB_TOKEN" \
 bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 180 --poll 10
 ```
 
 Result:
-- `4 passed, 0 failed, 0 errors`
+- `3 passed, 1 failed, 0 errors`
+- Mission status: **IN PROGRESS** (hard gate not green)
 
 Artifacts:
-- `reports/eval-config-2026-03-06T04-45-22-809Z.json`
-- `reports/eval-raw-2026-03-06T04-45-22-809Z.json`
-- `reports/eval-output-2026-03-06T04-45-22-809Z.json`
+- `reports/eval-config-2026-03-06T05-36-52-557Z.json`
+- `reports/eval-raw-2026-03-06T05-36-52-557Z.json`
+- `reports/eval-output-2026-03-06T05-36-52-557Z.json`
 
 Per-case status:
 - `python-hello-world`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/339`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/339#issuecomment-4009519291`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/339#issuecomment-4009520835`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/396`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/396#issuecomment-4009695672`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/396#issuecomment-4009697242`
 - `typescript-bun-hello`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/340`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/340#issuecomment-4009519340`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/340#issuecomment-4009522931`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/397`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/397#issuecomment-4009695751`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/397#issuecomment-4009699330`
 - `research-gpt-release`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/341`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/341#issuecomment-4009519386`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/341#issuecomment-4009524852`
-- `direct-assignment-no-mention`: PASS
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/398`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/398#issuecomment-4009695846`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/398#issuecomment-4009701276`
+- `direct-assignment-no-mention`: FAIL (expected hard gate until platform is fixed)
   - `trigger_type=assignment`
-  - `trigger_mode=direct`
-  - `assignment_trigger_check=pass`
-  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/342`
-  - assignees: `[dzianisv]`
-  - assignment follow-up comment: `https://github.com/dzianisv/codebridge-test/issues/342#issuecomment-4009536561`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/342#issuecomment-4009541334`
+  - `trigger_mode=failed`
+  - `assignment_trigger_check=fail`
+  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/399`
+  - assignees: `[]`
+  - assignment API evidence: `403 Must have admin rights to Repository` for `clawengineer` and `clawengineer[bot]`
+  - bot reply: none within timeout
 
 ### Operational Matrix
 
-Command:
-
-```bash
-GITHUB_TOKEN="$(gh auth token --user dzianisv)" GH_TOKEN="$GITHUB_TOKEN" \
-TEST_ORG=dzianisv \
-TEST_CODEBRIDGE_REPO=dzianisv/codebridge-test \
-TEST_CODEBRIDGE_ISSUE=320 \
-TEST_ISSUE_REPO=dzianisv/codebridge-test \
-TEST_ISSUE_NUMBER=320 \
-TEST_PR_REPO=dzianisv/codebridge-test \
-TEST_PR_NUMBER=323 \
-TEST_DISCUSSION_REPO=dzianisv/codebridge-test \
-TEST_DISCUSSION_NUMBER=324 \
-TEST_POLL_SECONDS=60 \
-bun scripts/runGithubMentionE2ETest.ts
-```
-
-Fixtures used:
-- issue: `https://github.com/dzianisv/codebridge-test/issues/320`
-- PR: `https://github.com/dzianisv/codebridge-test/pull/323`
-- discussion: `https://github.com/dzianisv/codebridge-test/discussions/324`
-
-Artifacts:
+Last verified artifact set (prior run):
 - `reports/codebridge-test-report-2026-03-06T04-38-04-890Z.json`
 - `reports/codebridge-test-report-2026-03-06T04-38-04-890Z.md`
 
-Results:
-- `issue-assigned (org codebridge-test)`: PASS
-  - trigger issue: `https://github.com/dzianisv/codebridge-test/issues/320`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/320#issuecomment-4009488914`
-- `issue-comment-mention (codebridge-org)`: PASS
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/320#issuecomment-4009488960`
-- `pr-review-mention`: PASS
-  - trigger review: `https://github.com/dzianisv/codebridge-test/pull/323#pullrequestreview-3901230029`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/pull/323#issuecomment-4009519297`
-- `discussion-comment-mention`: PASS
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/discussions/324#discussioncomment-16018161`
+Current focus remains the hard-gate blocker above; matrix refresh will be rerun after assignment-trigger platform fix.
 
 ## Current Constraints
 
-- No open mission blockers in the latest verified run.
-- Token precedence for matrix execution must prefer runtime env override (`process.env`) before `~/.env.d/github.env` to avoid running with a non-owner token.
+- GitHub assignment API in `dzianisv/codebridge-test` cannot assign `clawengineer`/`clawengineer[bot]` with current permissions.
+- `docs/testing.md` forbids synthetic assignment fallback as a waiver; assignment case must stay FAIL until real app assignment works.
 - Tracking/evidence issue for hard-gate status: `https://github.com/dzianisv/CodeClaw/issues/6`
 
 ## Remaining Mission Work
 
-1. Keep evidence fresh when OpenClaw routing/auth changes.
-2. Continue monitoring discussion outbound replies (ingress is verified; reply timing can still vary by runtime latency).
+1. Fix platform/config so app identity is directly assignable in `dzianisv/codebridge-test`.
+2. Re-run hard eval until `4 passed, 0 failed, 0 errors`.
+3. Refresh operational matrix artifacts after hard gate is green.
 
 ## Closure Checklist
 
 - [x] Promptfoo hard gate exists.
 - [x] Mention/issue scenarios execute through OpenClaw.
-- [x] Direct assignment-without-mention passes with real issue assignee evidence.
-- [x] PR mention path verified in current run artifacts.
-- [x] Discussion mention path verified in current run artifacts.
-- [x] Hard gate fully passes and mission can be closed.
+- [ ] Direct assignment-without-mention passes with real issue assignee evidence.
+- [x] PR mention path verified in artifacts.
+- [x] Discussion mention path verified in artifacts.
+- [ ] Hard gate fully passes and mission can be closed.
