@@ -58,6 +58,7 @@ Mission is not complete until all are true:
 Command:
 
 ```bash
+GITHUB_TOKEN="$(gh auth token --user dzianisv)" GH_TOKEN="$GITHUB_TOKEN" \
 bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 180 --poll 10
 ```
 
@@ -65,69 +66,88 @@ Result:
 - `4 passed, 0 failed, 0 errors`
 
 Artifacts:
-- `reports/eval-config-2026-03-06T03-26-38-919Z.json`
-- `reports/eval-raw-2026-03-06T03-26-38-919Z.json`
-- `reports/eval-output-2026-03-06T03-26-38-919Z.json`
+- `reports/eval-config-2026-03-06T04-45-22-809Z.json`
+- `reports/eval-raw-2026-03-06T04-45-22-809Z.json`
+- `reports/eval-output-2026-03-06T04-45-22-809Z.json`
 
 Per-case status:
 - `python-hello-world`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/312`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/312#issuecomment-4009277842`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/312#issuecomment-4009279309`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/339`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/339#issuecomment-4009519291`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/339#issuecomment-4009520835`
 - `typescript-bun-hello`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/313`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/313#issuecomment-4009277911`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/313#issuecomment-4009280704`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/340`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/340#issuecomment-4009519340`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/340#issuecomment-4009522931`
 - `research-gpt-release`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/314`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/314#issuecomment-4009277993`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/314#issuecomment-4009282596`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/341`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/341#issuecomment-4009519386`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/341#issuecomment-4009524852`
 - `direct-assignment-no-mention`: PASS
   - `trigger_type=assignment`
   - `trigger_mode=direct`
   - `assignment_trigger_check=pass`
-  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/315`
+  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/342`
   - assignees: `[dzianisv]`
-  - assignment follow-up comment: `https://github.com/dzianisv/codebridge-test/issues/315#issuecomment-4009292282`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/315#issuecomment-4009296341`
+  - assignment follow-up comment: `https://github.com/dzianisv/codebridge-test/issues/342#issuecomment-4009536561`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/342#issuecomment-4009541334`
 
 ### Operational Matrix
 
 Command:
 
 ```bash
-TEST_POLL_SECONDS=30 bun scripts/runGithubMentionE2ETest.ts
+GITHUB_TOKEN="$(gh auth token --user dzianisv)" GH_TOKEN="$GITHUB_TOKEN" \
+TEST_ORG=dzianisv \
+TEST_CODEBRIDGE_REPO=dzianisv/codebridge-test \
+TEST_CODEBRIDGE_ISSUE=320 \
+TEST_ISSUE_REPO=dzianisv/codebridge-test \
+TEST_ISSUE_NUMBER=320 \
+TEST_PR_REPO=dzianisv/codebridge-test \
+TEST_PR_NUMBER=323 \
+TEST_DISCUSSION_REPO=dzianisv/codebridge-test \
+TEST_DISCUSSION_NUMBER=324 \
+TEST_POLL_SECONDS=60 \
+bun scripts/runGithubMentionE2ETest.ts
 ```
 
+Fixtures used:
+- issue: `https://github.com/dzianisv/codebridge-test/issues/320`
+- PR: `https://github.com/dzianisv/codebridge-test/pull/323`
+- discussion: `https://github.com/dzianisv/codebridge-test/discussions/324`
+
 Artifacts:
-- `reports/codebridge-test-report-2026-03-06T03-28-49-215Z.json`
-- `reports/codebridge-test-report-2026-03-06T03-28-49-215Z.md`
+- `reports/codebridge-test-report-2026-03-06T04-38-04-890Z.json`
+- `reports/codebridge-test-report-2026-03-06T04-38-04-890Z.md`
 
 Results:
 - `issue-assigned (org codebridge-test)`: PASS
-  - trigger issue: `https://github.com/VibeTechnologies/codebridge-test/issues/1`
+  - trigger issue: `https://github.com/dzianisv/codebridge-test/issues/320`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/320#issuecomment-4009488914`
 - `issue-comment-mention (codebridge-org)`: PASS
-  - trigger comment: `https://github.com/VibeTechnologies/codebridge-test/issues/1#issuecomment-4009299058`
-- `pr-review-mention`: BLOCKED (`TEST_PR_NUMBER` not configured)
-- `discussion-comment-mention`: BLOCKED (`TEST_DISCUSSION_NUMBER` not configured)
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/320#issuecomment-4009488960`
+- `pr-review-mention`: PASS
+  - trigger review: `https://github.com/dzianisv/codebridge-test/pull/323#pullrequestreview-3901230029`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/pull/323#issuecomment-4009519297`
+- `discussion-comment-mention`: PASS
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/discussions/324#discussioncomment-16018161`
 
 ## Current Constraints
 
-- Hard gate is currently green.
-- PR and discussion matrix paths remain `BLOCKED` in this run because `TEST_PR_NUMBER` and `TEST_DISCUSSION_NUMBER` are unset.
+- No open mission blockers in the latest verified run.
+- Token precedence for matrix execution must prefer runtime env override (`process.env`) before `~/.env.d/github.env` to avoid running with a non-owner token.
 - Tracking/evidence issue for hard-gate status: `https://github.com/dzianisv/CodeClaw/issues/6`
 
 ## Remaining Mission Work
 
-1. Configure executable PR/discussion fixtures and re-run matrix with both paths active.
-2. Keep PR/issue status aligned with artifacts and gate outcomes.
-3. Keep hard-gate proof fresh when trigger routing changes.
+1. Keep evidence fresh when OpenClaw routing/auth changes.
+2. Continue monitoring discussion outbound replies (ingress is verified; reply timing can still vary by runtime latency).
 
 ## Closure Checklist
 
 - [x] Promptfoo hard gate exists.
 - [x] Mention/issue scenarios execute through OpenClaw.
 - [x] Direct assignment-without-mention passes with real issue assignee evidence.
-- [ ] PR mention path verified in current run artifacts.
-- [ ] Discussion mention path verified in current run artifacts.
+- [x] PR mention path verified in current run artifacts.
+- [x] Discussion mention path verified in current run artifacts.
 - [x] Hard gate fully passes and mission can be closed.

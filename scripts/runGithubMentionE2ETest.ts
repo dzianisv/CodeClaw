@@ -1112,9 +1112,9 @@ async function main() {
   const githubEnv = parseEnvFile(GITHUB_ENV_PATH);
   const githubToken = requireEnvValue(
     "GITHUB_TOKEN",
-    githubEnv.GITHUB_TOKEN,
     process.env.GITHUB_TOKEN,
     process.env.GH_TOKEN,
+    githubEnv.GITHUB_TOKEN,
     openclawEnv.GITHUB_TOKEN,
     openclawEnv.GH_TOKEN,
   );
