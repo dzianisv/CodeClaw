@@ -58,9 +58,9 @@ Mission is not complete until all are true:
 Commands:
 
 ```bash
-set -a; source ~/.env.d/github.env >/dev/null 2>&1; set +a
 bun build --target=bun ./scripts/eval-openclaw.ts --outfile /tmp/eval-openclaw.js
-GITHUB_TOKEN="$GITHUB_TOKEN" GH_TOKEN="$GITHUB_TOKEN" \
+OWNER_TOKEN="$(env -u GITHUB_TOKEN -u GH_TOKEN gh auth token --user dzianisv)"
+GITHUB_TOKEN="$OWNER_TOKEN" GH_TOKEN="$OWNER_TOKEN" \
 bun scripts/eval-openclaw.ts --repo dzianisv/codebridge-test --timeout 180 --poll 10
 ```
 
@@ -69,30 +69,30 @@ Result:
 - Mission status: **IN PROGRESS** (hard gate not green)
 
 Artifacts:
-- `reports/eval-config-2026-03-06T05-36-52-557Z.json`
-- `reports/eval-raw-2026-03-06T05-36-52-557Z.json`
-- `reports/eval-output-2026-03-06T05-36-52-557Z.json`
+- `reports/eval-config-2026-03-06T05-43-56-761Z.json`
+- `reports/eval-raw-2026-03-06T05-43-56-761Z.json`
+- `reports/eval-output-2026-03-06T05-43-56-761Z.json`
 
 Per-case status:
 - `python-hello-world`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/396`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/396#issuecomment-4009695672`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/396#issuecomment-4009697242`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/400`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/400#issuecomment-4009720478`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/400#issuecomment-4009722457`
 - `typescript-bun-hello`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/397`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/397#issuecomment-4009695751`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/397#issuecomment-4009699330`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/401`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/401#issuecomment-4009720556`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/401#issuecomment-4009724204`
 - `research-gpt-release`: PASS
-  - issue: `https://github.com/dzianisv/codebridge-test/issues/398`
-  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/398#issuecomment-4009695846`
-  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/398#issuecomment-4009701276`
+  - issue: `https://github.com/dzianisv/codebridge-test/issues/402`
+  - trigger comment: `https://github.com/dzianisv/codebridge-test/issues/402#issuecomment-4009720637`
+  - bot reply: `https://github.com/dzianisv/codebridge-test/issues/402#issuecomment-4009726083`
 - `direct-assignment-no-mention`: FAIL (expected hard gate until platform is fixed)
   - `trigger_type=assignment`
   - `trigger_mode=failed`
   - `assignment_trigger_check=fail`
-  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/399`
+  - scenario issue: `https://github.com/dzianisv/codebridge-test/issues/403`
   - assignees: `[]`
-  - assignment API evidence: `403 Must have admin rights to Repository` for `clawengineer` and `clawengineer[bot]`
+  - assignment API evidence: assign calls return success payload but assignees remain empty for `clawengineer` and `clawengineer[bot]`
   - bot reply: none within timeout
 
 ### Operational Matrix
